@@ -148,6 +148,21 @@ export LOCAL_RAG_OPENAI_API_KEY='...'
 The project never enables a paid provider implicitly. Remote/local provider failure cannot make
 full-text indexing or search unavailable.
 
+## Security and privacy
+
+The source folder remains authoritative, but the SQLite database and extracted/revision artifacts
+contain searchable copies of document content and metadata. Keep `~/.local-rag` readable only by
+trusted local users and include it in backup/retention decisions appropriate for the source data.
+
+Local OCR and local embeddings do not send document text to an inference API. Enabling the
+OpenAI-compatible embedding provider sends indexed chunk text and search queries to the configured
+endpoint. Review that provider's data policy before enabling it, keep API keys in environment
+variables, and never place credentials in `config.json`, MCP examples, commits, or issue reports.
+
+MCP uses stdio and its reader/reviewer/admin modes are capability exposure boundaries, not user
+authentication. Run reviewer/admin mode only for trusted local agents. See
+[`SECURITY.md`](SECURITY.md) for vulnerability reporting and additional deployment guidance.
+
 ## Evidence-backed metadata and relationships
 
 Automatic metadata (hash, size, title, type, word count, source-position count, and extractor

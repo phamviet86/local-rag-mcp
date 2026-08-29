@@ -8,7 +8,6 @@ version = "0.3.2"
 description = "Local-first document indexing and retrieval"
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"}
 authors = [{name = "local-rag contributors"}]
 dependencies = [
   "openpyxl>=3.1,<4",

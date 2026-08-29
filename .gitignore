@@ -1,10 +1,35 @@
+# Python bytecode and environments
 __pycache__/
 *.py[cod]
-*.egg-info/
+.venv/
+
+# Test, lint, and type-check caches
 .pytest_cache/
 .ruff_cache/
-.venv/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Packaging output
+*.egg-info/
+build/
+dist/
+
+# Local configuration and application data
 .env
+.env.*
+!.env.example
+.local-rag/
 *.db
 *.sqlite
 *.sqlite3
+
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
