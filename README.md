@@ -54,11 +54,12 @@ document snapshot, trusts matching size/mtime without hashing, and hashes only c
 candidate's content hash is unchanged, its stored stat metadata is refreshed without extraction.
 Extraction and chunk preparation finish before a short SQLite transaction replaces index state.
 Default `reindex`/`rebuild` reconstructs chunks and FTS from the effective corrected artifact, or
-the base extracted artifact when there is no correction. It does not rerun extraction/OCR for
-unchanged source content, and preserves review status, corrections, and revision history. Use the
-explicit `--reextract` option only when fresh extraction/OCR is intended; it replaces derived
-extraction and review state from the authoritative source. PDF review items and corrections survive
-restarts; source files are never modified.
+the base extracted artifact when there is no correction. Unlike normal reconciliation, deliberate
+reindex hashes every targeted source before trusting its cached artifact. It does not rerun
+extraction/OCR when that hash matches, and preserves review status, corrections, and revision
+history. Use the explicit `--reextract` option only when fresh extraction/OCR is intended; it
+replaces derived extraction and review state from the authoritative source. PDF review items and
+corrections survive restarts; source files are never modified.
 
 Supported extraction and provenance:
 

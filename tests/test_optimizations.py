@@ -74,11 +74,15 @@ class OptimizationTests(unittest.TestCase):
         service = LocalRAG(self.settings)
         service.scan()
 
-        with patch.object(
-            service.extractor, "extract", side_effect=AssertionError("extractor reran")
-        ) as extracted:
+        with (
+            patch("local_rag.indexer._file_hash", wraps=_file_hash) as hashed,
+            patch.object(
+                service.extractor, "extract", side_effect=AssertionError("extractor reran")
+            ) as extracted,
+        ):
             rebuilt = service.scan("note.txt", force_index=True)
         self.assertEqual(rebuilt["indexed"], 1)
+        hashed.assert_called_once_with(note.resolve())
         extracted.assert_not_called()
         self.assertIn("cached extraction content", service.read("note.txt")["text"])
 
@@ -88,6 +92,29 @@ class OptimizationTests(unittest.TestCase):
             rebuilt = service.scan("note.txt", force_index=True, reextract=True)
         self.assertEqual(rebuilt["indexed"], 1)
         extracted.assert_called_once_with(note.resolve())
+
+    def test_reindex_hashes_equal_size_file_with_restored_mtime(self):
+        note = self.root / "note.txt"
+        note.write_text("alpha marker", encoding="utf-8")
+        service = LocalRAG(self.settings)
+        service.scan()
+        original = note.stat()
+
+        note.write_text("bravo marker", encoding="utf-8")
+        os.utime(note, ns=(original.st_atime_ns, original.st_mtime_ns))
+        with patch.object(
+            service.extractor, "extract", wraps=service.extractor.extract
+        ) as extracted:
+            rebuilt = service.scan("note.txt", force_index=True)
+
+        self.assertEqual(rebuilt["indexed"], 1)
+        extracted.assert_called_once_with(note.resolve())
+        self.assertEqual(service.db.resolve_document("note.txt")["content_hash"], _file_hash(note))
+        self.assertIn("bravo marker", service.read("note.txt")["text"])
+        self.assertEqual(
+            service.search("bravo", mode="full_text")["results"][0]["path"], "note.txt"
+        )
+        self.assertFalse(service.search("alpha", mode="full_text")["results"])
 
     def test_existing_schema_migrates_to_metadata_and_revision_indexes(self):
         database = Database(Path(self.temp.name) / "migration.sqlite3")

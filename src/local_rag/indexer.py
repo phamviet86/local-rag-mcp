@@ -157,12 +157,6 @@ class Indexer:
         if current is not None and not force_index and not reextract:
             if current["size"] == snapshot.size and current["modified_ns"] == snapshot.modified_ns:
                 return "unchanged"
-        if current is not None and force_index and not reextract:
-            stats_match = (
-                current["size"] == snapshot.size and current["modified_ns"] == snapshot.modified_ns
-            )
-            if stats_match:
-                return self._prepare_cached_reindex(snapshot, current)
         content_hash = _file_hash(snapshot.path)
         if current is not None and current["content_hash"] == content_hash and not reextract:
             if force_index:

@@ -210,7 +210,7 @@ class MCPServer:
                         "protocolVersion", "2024-11-05"
                     ),
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "local-rag", "version": "0.3.1"},
+                    "serverInfo": {"name": "local-rag", "version": "0.3.2"},
                 }
             elif method == "ping":
                 result = {}
