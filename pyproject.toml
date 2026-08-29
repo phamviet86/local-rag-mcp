@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-rag"
+version = "0.2.0"
+description = "Local-first document indexing and retrieval"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "local-rag contributors"}]
+dependencies = [
+  "openpyxl>=3.1,<4",
+  "pdf-inspector==1.15.0",
+  "python-docx>=1.1,<2",
+  "python-pptx>=1.0,<2",
+  "watchdog>=4,<7",
+]
+
+[project.optional-dependencies]
+local-embeddings = ["sentence-transformers>=3,<6"]
+dev = ["pytest>=8,<9", "ruff>=0.5"]
+
+[project.scripts]
+local-rag = "local_rag.cli:main"
+local-rag-mcp = "local_rag.mcp:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
