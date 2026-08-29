@@ -23,9 +23,14 @@ class LocalRAG:
         self.indexer = Indexer(settings, self.db, self.extractor, self.embeddings)
         self.search_engine = SearchEngine(settings, self.db, self.embeddings)
 
-    def scan(self, target: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
+    def scan(
+        self,
+        target: Optional[str] = None,
+        force_index: bool = False,
+        reextract: bool = False,
+    ) -> Dict[str, Any]:
         path = self.settings.scope(target) if target else None
-        return self.indexer.reconcile(path, force=force)
+        return self.indexer.reconcile(path, force_index=force_index, reextract=reextract)
 
     def search(
         self,

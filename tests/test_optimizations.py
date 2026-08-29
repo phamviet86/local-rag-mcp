@@ -68,6 +68,27 @@ class OptimizationTests(unittest.TestCase):
             service.scan()
             self.assertEqual(hashed.call_count, 0)
 
+    def test_reindex_uses_cached_artifact_and_reextract_is_explicit(self):
+        note = self.root / "note.txt"
+        note.write_text("cached extraction content", encoding="utf-8")
+        service = LocalRAG(self.settings)
+        service.scan()
+
+        with patch.object(
+            service.extractor, "extract", side_effect=AssertionError("extractor reran")
+        ) as extracted:
+            rebuilt = service.scan("note.txt", force_index=True)
+        self.assertEqual(rebuilt["indexed"], 1)
+        extracted.assert_not_called()
+        self.assertIn("cached extraction content", service.read("note.txt")["text"])
+
+        with patch.object(
+            service.extractor, "extract", wraps=service.extractor.extract
+        ) as extracted:
+            rebuilt = service.scan("note.txt", force_index=True, reextract=True)
+        self.assertEqual(rebuilt["indexed"], 1)
+        extracted.assert_called_once_with(note.resolve())
+
     def test_existing_schema_migrates_to_metadata_and_revision_indexes(self):
         database = Database(Path(self.temp.name) / "migration.sqlite3")
         with database.connect() as connection:
@@ -191,6 +212,18 @@ class OptimizationTests(unittest.TestCase):
         hits = service.search("corrected", mode="full_text")["results"]
         self.assertEqual(hits[0]["path"], "document.pdf")
         self.assertEqual(service.status()["review_revisions"], 1)
+
+        effective_before = service.db.resolve_document("document.pdf")["effective_artifact_path"]
+        stat = pdf.stat()
+        os.utime(pdf, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10_000_000))
+        with patch.object(service.extractor, "extract", side_effect=AssertionError("OCR reran")):
+            rebuilt = service.scan("document.pdf", force_index=True)
+        self.assertEqual(rebuilt["indexed"], 1)
+        document_after = service.db.resolve_document("document.pdf")
+        self.assertEqual(document_after["effective_artifact_path"], effective_before)
+        self.assertEqual(service.db.review(review["id"])["status"], "resolved")
+        self.assertEqual(service.status()["review_revisions"], 1)
+        self.assertIn("Human corrected searchable phrase", service.read("document.pdf")["text"])
 
 
 if __name__ == "__main__":

@@ -120,8 +120,20 @@ ADMIN_TOOLS = [
     },
     {
         "name": "reindex",
-        "description": "Force re-extraction of a target or the complete root.",
-        "inputSchema": _schema({"target": {"type": "string"}}),
+        "description": (
+            "Rebuild index state from cached extraction for a target or the complete root. "
+            "Set reextract only to deliberately rerun extraction/OCR."
+        ),
+        "inputSchema": _schema(
+            {
+                "target": {"type": "string"},
+                "reextract": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Rerun extraction/OCR instead of using cached artifacts.",
+                },
+            }
+        ),
     },
 ]
 
@@ -179,7 +191,11 @@ class MCPServer:
                 values["actor"],
             ),
             "reconcile": lambda: self.service.scan(values.get("target")),
-            "reindex": lambda: self.service.scan(values.get("target"), force=True),
+            "reindex": lambda: self.service.scan(
+                values.get("target"),
+                force_index=True,
+                reextract=bool(values.get("reextract", False)),
+            ),
         }
         return handlers[name]()
 
@@ -194,7 +210,7 @@ class MCPServer:
                         "protocolVersion", "2024-11-05"
                     ),
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "local-rag", "version": "0.3.0"},
+                    "serverInfo": {"name": "local-rag", "version": "0.3.1"},
                 }
             elif method == "ping":
                 result = {}

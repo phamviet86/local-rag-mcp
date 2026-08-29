@@ -25,11 +25,18 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("target", nargs="?", help="relative file/folder; omitted means all")
 
     reindex = commands.add_parser(
-        "reindex", aliases=["rebuild"], help="force rebuild by target or all"
+        "reindex",
+        aliases=["rebuild"],
+        help="rebuild index state from cached extraction by target or all",
     )
     group = reindex.add_mutually_exclusive_group(required=True)
     group.add_argument("--all", action="store_true")
     group.add_argument("--target", help="relative file or folder")
+    reindex.add_argument(
+        "--reextract",
+        action="store_true",
+        help="deliberately rerun extraction/OCR instead of using cached artifacts",
+    )
 
     search = commands.add_parser("search", help="global or subfolder-scoped search")
     search.add_argument("query")
@@ -110,7 +117,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if command in {"scan", "reconcile"}:
         output = service.scan(args.target)
     elif command in {"reindex", "rebuild"}:
-        output = service.scan(None if args.all else args.target, force=True)
+        output = service.scan(
+            None if args.all else args.target,
+            force_index=True,
+            reextract=args.reextract,
+        )
     elif command == "search":
         output = service.search(args.query, args.limit, args.scope, args.mode)
     elif command == "read":

@@ -2,7 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from watchdog.events import (
     FileCreatedEvent,
@@ -12,6 +12,7 @@ from watchdog.events import (
     FileOpenedEvent,
 )
 
+from local_rag.cli import parser
 from local_rag.config import Settings
 from local_rag.mcp import MCPServer
 from local_rag.service import LocalRAG
@@ -69,7 +70,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(metadata["relationships"][0]["relation"], "related")
 
         calls_before_rebuild = embeddings.calls
-        rebuilt = service.scan("team-a/one.md", force=True)
+        rebuilt = service.scan("team-a/one.md", force_index=True)
         self.assertEqual(rebuilt["indexed"], 1)
         self.assertEqual(embeddings.calls, calls_before_rebuild)
         first.write_text("# Orchard\nupdated harvest", encoding="utf-8")
@@ -154,7 +155,26 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(failed["result"]["isError"])
         self.assertIn("correct_page", reviewer.allowed)
         self.assertNotIn("reconcile", reviewer.allowed)
-        self.assertIn("reconcile", MCPServer(service, mode="admin").allowed)
+        admin = MCPServer(service, mode="admin")
+        self.assertIn("reconcile", admin.allowed)
+        reindex = next(tool for tool in admin.tools if tool["name"] == "reindex")
+        self.assertFalse(reindex["inputSchema"]["properties"]["reextract"]["default"])
+        with patch.object(
+            service.extractor, "extract", side_effect=AssertionError("extractor reran")
+        ) as extracted:
+            rebuilt = admin.call("reindex", {"target": "note.txt"})
+        self.assertEqual(rebuilt["indexed"], 1)
+        extracted.assert_not_called()
+        with patch.object(
+            service.extractor, "extract", wraps=service.extractor.extract
+        ) as extracted:
+            rebuilt = admin.call("reindex", {"target": "note.txt", "reextract": True})
+        self.assertEqual(rebuilt["indexed"], 1)
+        extracted.assert_called_once()
+        self.assertFalse(parser().parse_args(["reindex", "--all"]).reextract)
+        self.assertTrue(
+            parser().parse_args(["reindex", "--target", "note.txt", "--reextract"]).reextract
+        )
 
     def test_pdf_artifact_and_review_are_durable(self):
         pdf = self.root / "document.pdf"

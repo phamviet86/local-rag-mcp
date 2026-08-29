@@ -41,8 +41,9 @@ symlinks are not traversed, and resolved file symlinks must remain inside the co
 ```bash
 local-rag reconcile                    # complete root
 local-rag reconcile reports/2026       # one subfolder
-local-rag reindex --target report.pdf  # force re-extraction
-local-rag rebuild --all                # force complete rebuild
+local-rag reindex --target report.pdf  # rebuild chunks/FTS from cached extracted text
+local-rag rebuild --all                # rebuild all index state from cached artifacts
+local-rag reindex --target report.pdf --reextract  # deliberately rerun extraction/OCR
 local-rag serve                        # continuous watch + periodic reconciliation
 ```
 
@@ -52,7 +53,12 @@ reconciliation runs every 60 seconds by default to recover missed events. Reconc
 document snapshot, trusts matching size/mtime without hashing, and hashes only candidates. If a
 candidate's content hash is unchanged, its stored stat metadata is refreshed without extraction.
 Extraction and chunk preparation finish before a short SQLite transaction replaces index state.
-PDF review items and corrections survive restarts; source files are never modified.
+Default `reindex`/`rebuild` reconstructs chunks and FTS from the effective corrected artifact, or
+the base extracted artifact when there is no correction. It does not rerun extraction/OCR for
+unchanged source content, and preserves review status, corrections, and revision history. Use the
+explicit `--reextract` option only when fresh extraction/OCR is intended; it replaces derived
+extraction and review state from the authoritative source. PDF review items and corrections survive
+restarts; source files are never modified.
 
 Supported extraction and provenance:
 
@@ -96,7 +102,8 @@ local-rag review correct 12 "Corrected searchable page text" \
 
 A correction creates an additive revision artifact with evidence and actor, resolves the review,
 and rebuilds only that document's chunks. The base OCR artifact is retained and the unchanged PDF
-is not OCRed again.
+is not OCRed again. Default reindex also keeps the effective corrected artifact and its complete
+review/revision state.
 
 ## Search and embeddings
 
@@ -178,6 +185,8 @@ local-rag mcp --mode admin
 ```
 
 Mutation targets/scopes are still resolved against the single configured root.
+Admin `reindex` accepts `reextract: false` by default. Set it to `true` only to deliberately rerun
+extraction/OCR rather than rebuilding from cached effective/base artifacts.
 
 ## Verification
 
@@ -193,8 +202,10 @@ The tests cover configuration containment, checksum-verified runtime installatio
 DOCX/XLSX/PPTX/PDF extraction, provenance, fast stat reconciliation, bounded batch embeddings,
 provider fallback, all search modes, literal-safe global/scoped search, indexed metadata and
 relationships, additive OCR correction, native watcher selection/coalescing, deletion, and MCP mode
-exposure/tool calls. A 1,000-file regression proves no hashing on unchanged files and at most eight
-embedding calls for 128-item batches.
+exposure/tool calls. Reindex regressions prove cached rebuilds do not call extractors, corrected PDF
+text and revision state survive, and explicit re-extraction calls the extractor. A 1,000-file
+regression proves no hashing on unchanged files and at most eight embedding calls for 128-item
+batches.
 
 ## Remaining design boundaries
 

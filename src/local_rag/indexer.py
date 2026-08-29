@@ -27,6 +27,7 @@ class PreparedDocument:
     artifact_path: Path
     chunks: Sequence[ChunkRecord]
     automatic: Dict[str, Any]
+    preserve_derived_state: bool = False
 
 
 class Indexer:
@@ -86,7 +87,12 @@ class Indexer:
         stat = resolved.stat()
         return FileSnapshot(resolved, stat.st_size, stat.st_mtime_ns)
 
-    def reconcile(self, target: Optional[Path] = None, force: bool = False) -> Dict[str, Any]:
+    def reconcile(
+        self,
+        target: Optional[Path] = None,
+        force_index: bool = False,
+        reextract: bool = False,
+    ) -> Dict[str, Any]:
         report: Dict[str, Any] = {
             "discovered": 0,
             "indexed": 0,
@@ -107,7 +113,7 @@ class Indexer:
             present.add(str(snapshot.path))
             current = documents.get(str(snapshot.path))
             try:
-                outcome = self._classify(snapshot, current, force)
+                outcome = self._classify(snapshot, current, force_index, reextract)
                 if outcome == "unchanged":
                     report["unchanged"] += 1
                 elif isinstance(outcome, tuple):
@@ -141,27 +147,71 @@ class Indexer:
         report["warnings"].extend(embedding["warnings"])
         return report
 
-    def _classify(self, snapshot: FileSnapshot, current: Any, force: bool) -> Any:
-        if current is not None and not force:
+    def _classify(
+        self,
+        snapshot: FileSnapshot,
+        current: Any,
+        force_index: bool = False,
+        reextract: bool = False,
+    ) -> Any:
+        if current is not None and not force_index and not reextract:
             if current["size"] == snapshot.size and current["modified_ns"] == snapshot.modified_ns:
                 return "unchanged"
+        if current is not None and force_index and not reextract:
+            stats_match = (
+                current["size"] == snapshot.size and current["modified_ns"] == snapshot.modified_ns
+            )
+            if stats_match:
+                return self._prepare_cached_reindex(snapshot, current)
         content_hash = _file_hash(snapshot.path)
-        if current is not None and not force and current["content_hash"] == content_hash:
+        if current is not None and current["content_hash"] == content_hash and not reextract:
+            if force_index:
+                return self._prepare_cached_reindex(snapshot, current)
             metadata = json.loads(current["metadata_json"])
             metadata["size"] = snapshot.size
             metadata["modified_ns"] = snapshot.modified_ns
             return int(current["id"]), snapshot, metadata
-        extracted, artifact = self._extract_cached(snapshot.path, content_hash, use_cache=not force)
+        extracted, artifact = self._extract_cached(
+            snapshot.path, content_hash, use_cache=not reextract
+        )
         chunks = _chunks(extracted, self.settings.chunk_chars, self.settings.chunk_overlap)
         automatic = _automatic_metadata(snapshot, extracted, content_hash)
         return PreparedDocument(snapshot, content_hash, extracted, artifact, chunks, automatic)
 
-    def index_file(self, path: Path, force: bool = False, embed: bool = True) -> bool:
+    def _prepare_cached_reindex(self, snapshot: FileSnapshot, current: Any) -> PreparedDocument:
+        effective = current["effective_artifact_path"]
+        artifact = Path(effective or current["artifact_path"])
+        if not artifact.is_file():
+            kind = "effective corrected" if effective else "extracted"
+            raise FileNotFoundError(
+                f"cached {kind} artifact is missing: {artifact}; rerun with --reextract"
+            )
+        extracted = _document_from_artifact(json.loads(artifact.read_text(encoding="utf-8")))
+        chunks = _chunks(extracted, self.settings.chunk_chars, self.settings.chunk_overlap)
+        automatic = json.loads(current["metadata_json"])
+        automatic.update(_automatic_metadata(snapshot, extracted, current["content_hash"]))
+        return PreparedDocument(
+            snapshot,
+            current["content_hash"],
+            extracted,
+            Path(current["artifact_path"]),
+            chunks,
+            automatic,
+            preserve_derived_state=True,
+        )
+
+    def index_file(
+        self,
+        path: Path,
+        force_index: bool = False,
+        reextract: bool = False,
+        embed: bool = True,
+    ) -> bool:
         snapshot = self.snapshot(path)
         if snapshot is None:
             return False
         current = self.db.document(snapshot.path)
-        outcome = self._classify(snapshot, current, force)
+        outcome = self._classify(snapshot, current, force_index, reextract)
         if outcome == "unchanged":
             return False
         with self.db.transaction() as connection:
@@ -199,23 +249,37 @@ class Indexer:
         if existing:
             document_id = int(existing["id"])
             _delete_chunks(connection, document_id)
-            connection.execute(
-                """UPDATE documents SET relative_path=?,content_hash=?,size=?,modified_ns=?,
-                   media_type=?,title=?,metadata_json=?,artifact_path=?,effective_artifact_path=NULL,
-                   indexed_at=CURRENT_TIMESTAMP WHERE id=?""",
-                (
-                    relative,
-                    document.content_hash,
-                    snapshot.size,
-                    snapshot.modified_ns,
-                    document.extracted.media_type,
-                    title,
-                    json.dumps(document.automatic),
-                    str(document.artifact_path),
-                    document_id,
-                ),
-            )
-            connection.execute("DELETE FROM reviews WHERE document_id=?", (document_id,))
+            if document.preserve_derived_state:
+                connection.execute(
+                    """UPDATE documents SET relative_path=?,size=?,modified_ns=?,title=?,
+                       metadata_json=?,indexed_at=CURRENT_TIMESTAMP WHERE id=?""",
+                    (
+                        relative,
+                        snapshot.size,
+                        snapshot.modified_ns,
+                        title,
+                        json.dumps(document.automatic),
+                        document_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """UPDATE documents SET relative_path=?,content_hash=?,size=?,modified_ns=?,
+                       media_type=?,title=?,metadata_json=?,artifact_path=?,
+                       effective_artifact_path=NULL,indexed_at=CURRENT_TIMESTAMP WHERE id=?""",
+                    (
+                        relative,
+                        document.content_hash,
+                        snapshot.size,
+                        snapshot.modified_ns,
+                        document.extracted.media_type,
+                        title,
+                        json.dumps(document.automatic),
+                        str(document.artifact_path),
+                        document_id,
+                    ),
+                )
+                connection.execute("DELETE FROM reviews WHERE document_id=?", (document_id,))
         else:
             cursor = connection.execute(
                 """INSERT INTO documents
@@ -235,7 +299,7 @@ class Indexer:
             )
             document_id = int(cursor.lastrowid)
         self._insert_chunks(connection, document_id, relative, title, document.chunks)
-        for review in document.extracted.reviews:
+        for review in () if document.preserve_derived_state else document.extracted.reviews:
             connection.execute(
                 """INSERT OR IGNORE INTO reviews
                    (document_id,path,content_hash,page,reason,detail_json) VALUES(?,?,?,?,?,?)""",
