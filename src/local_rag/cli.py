@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from .config import Settings, default_home, parse_exclusions
+from .search import SEARCH_MODES
 from .service import LocalRAG
 
 
@@ -34,6 +35,7 @@ def parser() -> argparse.ArgumentParser:
     search.add_argument("query")
     search.add_argument("--scope")
     search.add_argument("--limit", type=int, default=8)
+    search.add_argument("--mode", choices=SEARCH_MODES, default="hybrid")
 
     read = commands.add_parser("read", help="read indexed extracted text")
     read.add_argument("path")
@@ -44,7 +46,8 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "serve", aliases=["watch"], help="watch continuously and reconcile periodically"
     )
-    commands.add_parser("mcp", help="serve MCP over stdio")
+    mcp = commands.add_parser("mcp", help="serve MCP over stdio")
+    mcp.add_argument("--mode", choices=("reader", "reviewer", "admin"), default="reader")
 
     review = commands.add_parser("review", help="list or resolve durable review items")
     review_commands = review.add_subparsers(dest="review_command", required=True)
@@ -53,6 +56,11 @@ def parser() -> argparse.ArgumentParser:
     review_resolve = review_commands.add_parser("resolve")
     review_resolve.add_argument("id", type=int)
     review_resolve.add_argument("resolution")
+    review_correct = review_commands.add_parser("correct")
+    review_correct.add_argument("id", type=int)
+    review_correct.add_argument("text")
+    review_correct.add_argument("evidence_json")
+    review_correct.add_argument("--actor", required=True)
 
     metadata = commands.add_parser("metadata", help="read or add evidence-backed metadata")
     metadata_commands = metadata.add_subparsers(dest="metadata_command", required=True)
@@ -104,7 +112,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     elif command in {"reindex", "rebuild"}:
         output = service.scan(None if args.all else args.target, force=True)
     elif command == "search":
-        output = service.search(args.query, args.limit, args.scope)
+        output = service.search(args.query, args.limit, args.scope, args.mode)
     elif command == "read":
         output = service.read(args.path, args.start, args.length)
     elif command == "status":
@@ -120,13 +128,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     elif command == "mcp":
         from .mcp import serve
 
-        return serve(service)
+        return serve(service, mode=args.mode)
     elif command == "review":
-        output = (
-            service.reviews(args.status)
-            if args.review_command == "list"
-            else service.resolve_review(args.id, args.resolution)
-        )
+        if args.review_command == "list":
+            output = service.reviews(args.status)
+        elif args.review_command == "resolve":
+            output = service.resolve_review(args.id, args.resolution)
+        else:
+            output = service.correct_review(
+                args.id, args.text, _evidence(args.evidence_json), args.actor
+            )
     elif command == "metadata":
         output = (
             service.metadata(args.path)

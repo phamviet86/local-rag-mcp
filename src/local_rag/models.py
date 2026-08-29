@@ -28,17 +28,3 @@ class ChunkRecord:
     end: int
     chunk_hash: str
     provenance: List[Dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class SearchHit:
-    path: str
-    title: str
-    document_hash: str
-    chunk_ordinal: int
-    text: str
-    score: float
-    lexical_score: float
-    semantic_score: float
-    provenance: List[Dict[str, Any]]
-    metadata: Dict[str, Any]

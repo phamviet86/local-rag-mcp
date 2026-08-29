@@ -1,4 +1,5 @@
 import json
+import threading
 from typing import Optional, Protocol, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -15,27 +16,32 @@ class EmbeddingProvider(Protocol):
 
 class LocalEmbeddings:
     def __init__(self, model: str, cache_dir: str):
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as exc:
-            raise RuntimeError(
-                "install local embeddings with: pip install 'local-rag[local-embeddings]'"
-            ) from exc
         self.model_name = model
-        self.model = SentenceTransformer(model, cache_folder=cache_dir)
+        self.cache_dir = cache_dir
+        self._model = None
+        self._lock = threading.Lock()
 
     @property
     def identity(self) -> Tuple[str, str]:
         return "local", self.model_name
 
     def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
-        return self.model.encode(list(texts), normalize_embeddings=True).tolist()
+        if self._model is None:
+            with self._lock:
+                if self._model is None:
+                    try:
+                        from sentence_transformers import SentenceTransformer
+                    except ImportError as exc:
+                        raise RuntimeError(
+                            "install local embeddings with: "
+                            "pip install 'local-rag[local-embeddings]'"
+                        ) from exc
+                    self._model = SentenceTransformer(self.model_name, cache_folder=self.cache_dir)
+        return self._model.encode(list(texts), normalize_embeddings=True).tolist()
 
 
 class OpenAIEmbeddings:
     def __init__(self, base_url: str, api_key: str, model: str, timeout: float = 30):
-        if not api_key:
-            raise ValueError("LOCAL_RAG_OPENAI_API_KEY is required for remote embeddings")
         self.base_url, self.api_key, self.model, self.timeout = (
             base_url.rstrip("/"),
             api_key,
@@ -48,6 +54,8 @@ class OpenAIEmbeddings:
         return "openai", self.model
 
     def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+        if not self.api_key:
+            raise RuntimeError("LOCAL_RAG_OPENAI_API_KEY is required for remote embeddings")
         request = Request(
             f"{self.base_url}/embeddings",
             data=json.dumps({"model": self.model, "input": list(texts)}).encode(),
@@ -64,11 +72,28 @@ class OpenAIEmbeddings:
         ]
 
 
+class UnavailableEmbeddings:
+    def __init__(self, provider: str, model: str, reason: str):
+        self._identity = provider, model
+        self.reason = reason
+
+    @property
+    def identity(self) -> Tuple[str, str]:
+        return self._identity
+
+    def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+        raise RuntimeError(self.reason)
+
+
 def configured_provider(settings: Settings) -> Optional[EmbeddingProvider]:
     if settings.embedding_provider == "none":
         return None
     if not settings.embedding_model:
-        raise ValueError("LOCAL_RAG_EMBEDDING_MODEL is required when embeddings are enabled")
+        return UnavailableEmbeddings(
+            settings.embedding_provider,
+            "unconfigured",
+            "LOCAL_RAG_EMBEDDING_MODEL is required when embeddings are enabled",
+        )
     if settings.embedding_provider == "local":
         return LocalEmbeddings(settings.embedding_model, str(settings.cache_dir / "embeddings"))
     return OpenAIEmbeddings(

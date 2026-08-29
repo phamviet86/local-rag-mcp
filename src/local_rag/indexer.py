@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
@@ -11,6 +12,23 @@ from .extract import Extractor
 from .models import ChunkRecord, ExtractedDocument, SourceSpan
 
 
+@dataclass(frozen=True)
+class FileSnapshot:
+    path: Path
+    size: int
+    modified_ns: int
+
+
+@dataclass(frozen=True)
+class PreparedDocument:
+    snapshot: FileSnapshot
+    content_hash: str
+    extracted: ExtractedDocument
+    artifact_path: Path
+    chunks: Sequence[ChunkRecord]
+    automatic: Dict[str, Any]
+
+
 class Indexer:
     def __init__(
         self,
@@ -18,211 +36,425 @@ class Indexer:
         database: Database,
         extractor: Extractor,
         embeddings: Optional[EmbeddingProvider] = None,
+        embedding_batch_size: int = 128,
     ):
-        self.settings, self.db, self.extractor, self.embeddings = (
-            settings,
-            database,
-            extractor,
-            embeddings,
-        )
+        self.settings = settings
+        self.db = database
+        self.extractor = extractor
+        self.embeddings = embeddings
+        self.embedding_batch_size = embedding_batch_size
 
-    def files(self, target: Optional[Path] = None) -> Iterator[Path]:
+    def files(self, target: Optional[Path] = None) -> Iterator[FileSnapshot]:
         base = (target or self.settings.root).resolve()
         if not self.settings.contains(base) or self.settings.excluded(base):
             raise ValueError("target is outside the configured root or excluded")
         if base.is_file():
-            if self.settings.accepts(base):
-                yield base
+            snapshot = self.snapshot(base)
+            if snapshot is not None:
+                yield snapshot
             return
-        for directory, names, files in os.walk(base, followlinks=False):
-            parent = Path(directory)
-            names[:] = [
-                name
-                for name in names
-                if not self.settings.excluded(parent / name) and not (parent / name).is_symlink()
-            ]
-            for name in sorted(files):
-                candidate = (parent / name).resolve()
-                if self.settings.accepts(candidate) and candidate.is_file():
-                    yield candidate
+        yield from self._walk(base)
+
+    def _walk(self, directory: Path) -> Iterator[FileSnapshot]:
+        try:
+            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            return
+        for entry in entries:
+            candidate = Path(entry.path)
+            try:
+                if entry.is_symlink():
+                    if entry.is_file(follow_symlinks=True):
+                        snapshot = self.snapshot(candidate)
+                        if snapshot is not None:
+                            yield snapshot
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    if not self.settings.excluded(candidate):
+                        yield from self._walk(candidate)
+                elif entry.is_file(follow_symlinks=False):
+                    snapshot = self.snapshot(candidate)
+                    if snapshot is not None:
+                        yield snapshot
+            except (FileNotFoundError, PermissionError, OSError):
+                continue
+
+    def snapshot(self, path: Path) -> Optional[FileSnapshot]:
+        resolved = path.resolve()
+        if not self.settings.accepts(resolved) or not resolved.is_file():
+            return None
+        stat = resolved.stat()
+        return FileSnapshot(resolved, stat.st_size, stat.st_mtime_ns)
 
     def reconcile(self, target: Optional[Path] = None, force: bool = False) -> Dict[str, Any]:
-        job_id = self.db.start_job(
-            "reconcile" if not force else "reindex", str(target or self.settings.root)
-        )
         report: Dict[str, Any] = {
-            "job_id": job_id,
             "discovered": 0,
             "indexed": 0,
             "unchanged": 0,
+            "stat_refreshed": 0,
             "removed": 0,
+            "embedded": 0,
+            "warnings": [],
             "errors": [],
         }
+        rows = self.db.document_snapshot()
+        documents = {row["path"]: row for row in rows}
         present: Set[str] = set()
+        prepared: List[PreparedDocument] = []
+        stat_updates: List[Tuple[int, FileSnapshot, Dict[str, Any]]] = []
+        for snapshot in self.files(target):
+            report["discovered"] += 1
+            present.add(str(snapshot.path))
+            current = documents.get(str(snapshot.path))
+            try:
+                outcome = self._classify(snapshot, current, force)
+                if outcome == "unchanged":
+                    report["unchanged"] += 1
+                elif isinstance(outcome, tuple):
+                    stat_updates.append(outcome)
+                    report["unchanged"] += 1
+                    report["stat_refreshed"] += 1
+                else:
+                    prepared.append(outcome)
+            except Exception as exc:
+                report["errors"].append(f"{snapshot.path}: {exc}")
+        removed_ids = self._missing_document_ids(rows, present, target)
         try:
-            for path in self.files(target):
-                report["discovered"] += 1
-                present.add(str(path))
-                try:
-                    changed = self.index_file(path, force=force)
-                    report["indexed" if changed else "unchanged"] += 1
-                except Exception as exc:
-                    report["errors"].append(f"{path}: {exc}")
-            report["removed"] = self.remove_missing(present, target)
-            self.db.finish_job(job_id, "failed" if report["errors"] else "completed", report)
-            return report
+            with self.db.transaction() as connection:
+                for document_id, snapshot, metadata in stat_updates:
+                    connection.execute(
+                        "UPDATE documents SET size=?,modified_ns=?,metadata_json=? WHERE id=?",
+                        (snapshot.size, snapshot.modified_ns, json.dumps(metadata), document_id),
+                    )
+                    self.db._refresh_metadata_index(connection, document_id)
+                for document in prepared:
+                    self._store(connection, document)
+                    report["indexed"] += 1
+                for document_id in removed_ids:
+                    _delete_document(connection, document_id, self.db)
+                    report["removed"] += 1
         except Exception as exc:
-            report["errors"].append(str(exc))
-            self.db.finish_job(job_id, "failed", report)
-            raise
+            report["errors"].append(f"index transaction: {exc}")
+            return report
+        embedding = self.embed_pending()
+        report["embedded"] = embedding["embedded"]
+        report["warnings"].extend(embedding["warnings"])
+        return report
 
-    def index_file(self, path: Path, force: bool = False) -> bool:
-        path = path.resolve()
-        if not self.settings.accepts(path) or not path.is_file():
-            return False
-        content_hash = _file_hash(path)
-        current = self.db.document(path)
-        if current is not None and current["content_hash"] == content_hash and not force:
-            self._ensure_vectors_for_document(int(current["id"]))
-            return False
-        extracted, artifact_path = self._extract_cached(path, content_hash, use_cache=not force)
+    def _classify(self, snapshot: FileSnapshot, current: Any, force: bool) -> Any:
+        if current is not None and not force:
+            if current["size"] == snapshot.size and current["modified_ns"] == snapshot.modified_ns:
+                return "unchanged"
+        content_hash = _file_hash(snapshot.path)
+        if current is not None and not force and current["content_hash"] == content_hash:
+            metadata = json.loads(current["metadata_json"])
+            metadata["size"] = snapshot.size
+            metadata["modified_ns"] = snapshot.modified_ns
+            return int(current["id"]), snapshot, metadata
+        extracted, artifact = self._extract_cached(snapshot.path, content_hash, use_cache=not force)
         chunks = _chunks(extracted, self.settings.chunk_chars, self.settings.chunk_overlap)
-        vectors = self._vectors(chunks)
-        stat = path.stat()
-        relative = path.relative_to(self.settings.root).as_posix()
-        automatic = _automatic_metadata(
-            path, extracted, content_hash, stat.st_size, stat.st_mtime_ns
-        )
-        title = str(automatic["title"])
+        automatic = _automatic_metadata(snapshot, extracted, content_hash)
+        return PreparedDocument(snapshot, content_hash, extracted, artifact, chunks, automatic)
+
+    def index_file(self, path: Path, force: bool = False, embed: bool = True) -> bool:
+        snapshot = self.snapshot(path)
+        if snapshot is None:
+            return False
+        current = self.db.document(snapshot.path)
+        outcome = self._classify(snapshot, current, force)
+        if outcome == "unchanged":
+            return False
         with self.db.transaction() as connection:
-            existing = connection.execute(
-                "SELECT id FROM documents WHERE path=?", (str(path),)
-            ).fetchone()
-            if existing:
-                document_id = int(existing["id"])
-                _delete_chunks(connection, document_id)
+            if isinstance(outcome, tuple):
+                document_id, refreshed, metadata = outcome
                 connection.execute(
-                    """UPDATE documents SET relative_path=?,content_hash=?,size=?,modified_ns=?,
-                       media_type=?,title=?,metadata_json=?,artifact_path=?,indexed_at=CURRENT_TIMESTAMP
-                       WHERE id=?""",
-                    (
-                        relative,
-                        content_hash,
-                        stat.st_size,
-                        stat.st_mtime_ns,
-                        extracted.media_type,
-                        title,
-                        json.dumps(automatic),
-                        str(artifact_path),
-                        document_id,
-                    ),
+                    "UPDATE documents SET size=?,modified_ns=?,metadata_json=? WHERE id=?",
+                    (refreshed.size, refreshed.modified_ns, json.dumps(metadata), document_id),
                 )
-                connection.execute("DELETE FROM reviews WHERE document_id=?", (document_id,))
-            else:
-                cursor = connection.execute(
-                    """INSERT INTO documents
-                       (path,relative_path,content_hash,size,modified_ns,media_type,title,metadata_json,artifact_path)
-                       VALUES(?,?,?,?,?,?,?,?,?)""",
-                    (
-                        str(path),
-                        relative,
-                        content_hash,
-                        stat.st_size,
-                        stat.st_mtime_ns,
-                        extracted.media_type,
-                        title,
-                        json.dumps(automatic),
-                        str(artifact_path),
-                    ),
-                )
-                document_id = int(cursor.lastrowid)
-            for chunk in chunks:
-                cursor = connection.execute(
-                    """INSERT INTO chunks
-                       (document_id,ordinal,text,start_char,end_char,chunk_hash,provenance_json)
-                       VALUES(?,?,?,?,?,?,?)""",
-                    (
-                        document_id,
-                        chunk.ordinal,
-                        chunk.text,
-                        chunk.start,
-                        chunk.end,
-                        chunk.chunk_hash,
-                        json.dumps(chunk.provenance),
-                    ),
-                )
-                connection.execute(
-                    "INSERT INTO chunks_fts(text,title,relative_path,chunk_id) VALUES(?,?,?,?)",
-                    (chunk.text, title, relative, int(cursor.lastrowid)),
-                )
-            for chunk_hash, provider, model, vector in vectors:
-                connection.execute(
-                    """INSERT OR IGNORE INTO vectors(chunk_hash,provider,model,vector_json)
-                       VALUES(?,?,?,?)""",
-                    (chunk_hash, provider, model, json.dumps(vector)),
-                )
-            for review in extracted.reviews:
-                connection.execute(
-                    """INSERT OR IGNORE INTO reviews
-                       (document_id,path,content_hash,page,reason,detail_json) VALUES(?,?,?,?,?,?)""",
-                    (
-                        document_id,
-                        str(path),
-                        content_hash,
-                        review.get("page"),
-                        review["reason"],
-                        json.dumps(review.get("detail", {})),
-                    ),
-                )
+                self.db._refresh_metadata_index(connection, document_id)
+                return False
+            self._store(connection, outcome)
+        if embed:
+            self.embed_pending()
         return True
 
+    def index_paths(self, paths: Sequence[Path]) -> Dict[str, Any]:
+        changed = 0
+        errors = []
+        for path in dict.fromkeys(path.resolve() for path in paths):
+            try:
+                changed += int(self.index_file(path, embed=False))
+            except Exception as exc:
+                errors.append(f"{path}: {exc}")
+        embedding = self.embed_pending()
+        return {"changed": changed, "errors": errors, **embedding}
+
+    def _store(self, connection: Any, document: PreparedDocument) -> int:
+        snapshot = document.snapshot
+        relative = snapshot.path.relative_to(self.settings.root).as_posix()
+        title = str(document.automatic["title"])
+        existing = connection.execute(
+            "SELECT id FROM documents WHERE path=?", (str(snapshot.path),)
+        ).fetchone()
+        if existing:
+            document_id = int(existing["id"])
+            _delete_chunks(connection, document_id)
+            connection.execute(
+                """UPDATE documents SET relative_path=?,content_hash=?,size=?,modified_ns=?,
+                   media_type=?,title=?,metadata_json=?,artifact_path=?,effective_artifact_path=NULL,
+                   indexed_at=CURRENT_TIMESTAMP WHERE id=?""",
+                (
+                    relative,
+                    document.content_hash,
+                    snapshot.size,
+                    snapshot.modified_ns,
+                    document.extracted.media_type,
+                    title,
+                    json.dumps(document.automatic),
+                    str(document.artifact_path),
+                    document_id,
+                ),
+            )
+            connection.execute("DELETE FROM reviews WHERE document_id=?", (document_id,))
+        else:
+            cursor = connection.execute(
+                """INSERT INTO documents
+                   (path,relative_path,content_hash,size,modified_ns,media_type,title,
+                    metadata_json,artifact_path) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    str(snapshot.path),
+                    relative,
+                    document.content_hash,
+                    snapshot.size,
+                    snapshot.modified_ns,
+                    document.extracted.media_type,
+                    title,
+                    json.dumps(document.automatic),
+                    str(document.artifact_path),
+                ),
+            )
+            document_id = int(cursor.lastrowid)
+        self._insert_chunks(connection, document_id, relative, title, document.chunks)
+        for review in document.extracted.reviews:
+            connection.execute(
+                """INSERT OR IGNORE INTO reviews
+                   (document_id,path,content_hash,page,reason,detail_json) VALUES(?,?,?,?,?,?)""",
+                (
+                    document_id,
+                    str(snapshot.path),
+                    document.content_hash,
+                    review.get("page"),
+                    review["reason"],
+                    json.dumps(review.get("detail", {})),
+                ),
+            )
+        self.db._refresh_metadata_index(connection, document_id)
+        return document_id
+
+    @staticmethod
+    def _insert_chunks(
+        connection: Any,
+        document_id: int,
+        relative: str,
+        title: str,
+        chunks: Sequence[ChunkRecord],
+    ) -> None:
+        for chunk in chunks:
+            cursor = connection.execute(
+                """INSERT INTO chunks
+                   (document_id,ordinal,text,start_char,end_char,chunk_hash,provenance_json)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (
+                    document_id,
+                    chunk.ordinal,
+                    chunk.text,
+                    chunk.start,
+                    chunk.end,
+                    chunk.chunk_hash,
+                    json.dumps(chunk.provenance),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO chunks_fts(text,title,relative_path,chunk_id) VALUES(?,?,?,?)",
+                (chunk.text, title, relative, int(cursor.lastrowid)),
+            )
+
+    def embed_pending(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"embedded": 0, "warnings": []}
+        if self.embeddings is None:
+            return result
+        provider, model = self.embeddings.identity
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                """SELECT c.chunk_hash,min(c.text) text FROM chunks c
+                   LEFT JOIN vectors v ON v.chunk_hash=c.chunk_hash
+                     AND v.provider=? AND v.model=?
+                   WHERE v.chunk_hash IS NULL GROUP BY c.chunk_hash ORDER BY c.chunk_hash""",
+                (provider, model),
+            ).fetchall()
+        for start in range(0, len(rows), self.embedding_batch_size):
+            batch = rows[start : start + self.embedding_batch_size]
+            try:
+                vectors = self.embeddings.embed([row["text"] for row in batch])
+                if len(vectors) != len(batch):
+                    raise RuntimeError("provider returned an unexpected embedding count")
+                with self.db.connect() as connection:
+                    connection.executemany(
+                        """INSERT OR IGNORE INTO vectors
+                           (chunk_hash,provider,model,vector_json) VALUES(?,?,?,?)""",
+                        [
+                            (row["chunk_hash"], provider, model, json.dumps(vector))
+                            for row, vector in zip(batch, vectors)
+                        ],
+                    )
+                result["embedded"] += len(batch)
+            except Exception as exc:
+                result["warnings"].append(f"embeddings unavailable; FTS remains usable: {exc}")
+                break
+        return result
+
     def remove(self, path: Path) -> bool:
-        path = path.resolve()
+        row = self.db.document(path.resolve())
+        if row is None:
+            return False
         with self.db.transaction() as connection:
-            row = connection.execute(
-                "SELECT id FROM documents WHERE path=?", (str(path),)
-            ).fetchone()
-            if not row:
-                return False
-            _delete_chunks(connection, int(row["id"]))
-            connection.execute("DELETE FROM documents WHERE id=?", (row["id"],))
-            return True
+            _delete_document(connection, int(row["id"]), self.db)
+        return True
 
     def move(self, source: Path, destination: Path) -> bool:
         source, destination = source.resolve(), destination.resolve()
-        if not destination.exists() or not self.settings.accepts(destination):
-            return self.remove(source)
         source_row = self.db.document(source)
-        if source_row is None or source_row["content_hash"] != _file_hash(destination):
+        snapshot = self.snapshot(destination)
+        if snapshot is None:
+            return self.remove(source)
+        if source_row is None:
+            return self.index_file(destination)
+        unchanged = (
+            source_row["size"] == snapshot.size
+            and source_row["modified_ns"] == snapshot.modified_ns
+        )
+        if not unchanged and source_row["content_hash"] != _file_hash(destination):
             changed = self.index_file(destination)
             self.remove(source)
             return changed
         relative = destination.relative_to(self.settings.root).as_posix()
+        metadata = json.loads(source_row["metadata_json"])
+        metadata.update({"size": snapshot.size, "modified_ns": snapshot.modified_ns})
         with self.db.transaction() as connection:
             connection.execute(
-                "UPDATE documents SET path=?,relative_path=? WHERE id=?",
-                (str(destination), relative, source_row["id"]),
+                """UPDATE documents SET path=?,relative_path=?,size=?,modified_ns=?,metadata_json=?
+                   WHERE id=?""",
+                (
+                    str(destination),
+                    relative,
+                    snapshot.size,
+                    snapshot.modified_ns,
+                    json.dumps(metadata),
+                    source_row["id"],
+                ),
             )
             connection.execute(
-                "UPDATE chunks_fts SET relative_path=? WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)",
+                """UPDATE chunks_fts SET relative_path=?
+                   WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)""",
                 (relative, source_row["id"]),
             )
             connection.execute(
                 "UPDATE reviews SET path=? WHERE document_id=?",
                 (str(destination), source_row["id"]),
             )
+            self.db._refresh_metadata_index(connection, int(source_row["id"]))
         return True
 
-    def remove_missing(self, present: Set[str], target: Optional[Path]) -> int:
-        base = (target or self.settings.root).resolve()
-        removed = 0
+    def correct_review(
+        self,
+        review_id: int,
+        corrected_text: str,
+        evidence: Sequence[Dict[str, Any]],
+        actor: str,
+    ) -> Dict[str, Any]:
+        if not corrected_text.strip():
+            raise ValueError("corrected page text must not be empty")
+        self.db._validate_evidence(evidence)
+        review = self.db.review(review_id)
+        if review["page"] is None:
+            raise ValueError("review item has no page number")
+        base = json.loads(Path(review["artifact_path"]).read_text(encoding="utf-8"))
         with self.db.connect() as connection:
-            paths = [Path(row[0]) for row in connection.execute("SELECT path FROM documents")]
-        for path in paths:
-            in_scope = path == base if base.is_file() else (path == base or base in path.parents)
-            if in_scope and str(path) not in present:
-                removed += int(self.remove(path))
-        return removed
+            previous = connection.execute(
+                """SELECT page,corrected_text FROM review_revisions
+                   WHERE document_id=? ORDER BY id""",
+                (review["document_id"],),
+            ).fetchall()
+        corrections = {int(row["page"]): row["corrected_text"] for row in previous}
+        corrections[int(review["page"])] = corrected_text.strip()
+        effective = _apply_pdf_corrections(base, corrections, evidence, actor)
+        revision_dir = self.settings.extracted_dir.parent / "revisions"
+        revision_dir.mkdir(parents=True, exist_ok=True)
+        revision_key = hashlib.sha256(
+            f"{review['content_hash']}:{review_id}:{corrected_text}:{actor}".encode()
+        ).hexdigest()
+        artifact = revision_dir / f"{revision_key}.json"
+        temporary = artifact.with_suffix(".tmp")
+        temporary.write_text(json.dumps(effective, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(artifact)
+        extracted = _document_from_artifact(effective)
+        chunks = _chunks(extracted, self.settings.chunk_chars, self.settings.chunk_overlap)
+        with self.db.connect() as connection:
+            document_metadata = json.loads(
+                connection.execute(
+                    "SELECT metadata_json FROM documents WHERE id=?",
+                    (review["document_id"],),
+                ).fetchone()[0]
+            )
+        document_metadata.update(
+            {
+                "word_count": len(extracted.text.split()),
+                "source_positions": len(extracted.spans),
+                "review_corrections": len(corrections),
+            }
+        )
+        with self.db.transaction() as connection:
+            connection.execute(
+                """INSERT INTO review_revisions
+                   (review_id,document_id,page,corrected_text,evidence_json,actor,artifact_path)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (
+                    review_id,
+                    review["document_id"],
+                    review["page"],
+                    corrected_text.strip(),
+                    json.dumps(evidence),
+                    actor,
+                    str(artifact),
+                ),
+            )
+            connection.execute(
+                """UPDATE reviews SET status='resolved',resolution=?,updated_at=CURRENT_TIMESTAMP
+                   WHERE id=?""",
+                (f"corrected by {actor}", review_id),
+            )
+            connection.execute(
+                """UPDATE documents SET effective_artifact_path=?,metadata_json=?
+                   WHERE id=?""",
+                (str(artifact), json.dumps(document_metadata), review["document_id"]),
+            )
+            _delete_chunks(connection, int(review["document_id"]))
+            self._insert_chunks(
+                connection,
+                int(review["document_id"]),
+                review["relative_path"],
+                review["title"],
+                chunks,
+            )
+            self.db._refresh_metadata_index(connection, int(review["document_id"]))
+        embedding = self.embed_pending()
+        return {
+            "review_id": review_id,
+            "status": "resolved",
+            "page": review["page"],
+            "artifact": str(artifact),
+            **embedding,
+        }
 
     def _extract_cached(
         self, path: Path, content_hash: str, use_cache: bool = True
@@ -230,14 +462,7 @@ class Indexer:
         artifact = self.settings.extracted_dir / f"{content_hash}.json"
         if use_cache and artifact.exists():
             payload = json.loads(artifact.read_text(encoding="utf-8"))
-            spans = [SourceSpan(**span) for span in payload["spans"]]
-            return ExtractedDocument(
-                payload["text"],
-                spans,
-                payload["media_type"],
-                payload["metadata"],
-                payload["reviews"],
-            ), artifact
+            return _document_from_artifact(payload), artifact
         extracted = self.extractor.extract(path)
         payload = {
             "source_hash": content_hash,
@@ -253,53 +478,17 @@ class Indexer:
         temporary.replace(artifact)
         return extracted, artifact
 
-    def _vectors(
-        self, chunks: Sequence[ChunkRecord]
-    ) -> List[Tuple[str, str, str, Sequence[float]]]:
-        if self.embeddings is None or not chunks:
-            return []
-        provider, model = self.embeddings.identity
-        missing: List[ChunkRecord] = []
-        with self.db.connect() as connection:
-            for chunk in chunks:
-                row = connection.execute(
-                    "SELECT 1 FROM vectors WHERE chunk_hash=? AND provider=? AND model=?",
-                    (chunk.chunk_hash, provider, model),
-                ).fetchone()
-                if row is None:
-                    missing.append(chunk)
-        if not missing:
-            return []
-        embedded = self.embeddings.embed([chunk.text for chunk in missing])
-        return [
-            (chunk.chunk_hash, provider, model, vector) for chunk, vector in zip(missing, embedded)
-        ]
-
-    def _ensure_vectors_for_document(self, document_id: int) -> None:
-        if self.embeddings is None:
-            return
-        with self.db.connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM chunks WHERE document_id=? ORDER BY ordinal", (document_id,)
-            ).fetchall()
-        chunks = [
-            ChunkRecord(
-                row["ordinal"],
-                row["text"],
-                row["start_char"],
-                row["end_char"],
-                row["chunk_hash"],
-                json.loads(row["provenance_json"]),
-            )
-            for row in rows
-        ]
-        vectors = self._vectors(chunks)
-        if vectors:
-            with self.db.connect() as connection:
-                connection.executemany(
-                    "INSERT OR IGNORE INTO vectors(chunk_hash,provider,model,vector_json) VALUES(?,?,?,?)",
-                    [(h, p, m, json.dumps(v)) for h, p, m, v in vectors],
-                )
+    def _missing_document_ids(
+        self, rows: Sequence[Any], present: Set[str], target: Optional[Path]
+    ) -> List[int]:
+        base = (target or self.settings.root).resolve()
+        result = []
+        for row in rows:
+            path = Path(row["path"])
+            in_scope = path == base if base.is_file() else path == base or base in path.parents
+            if in_scope and str(path) not in present:
+                result.append(int(row["id"]))
+        return result
 
 
 def _delete_chunks(connection: Any, document_id: int) -> None:
@@ -311,6 +500,26 @@ def _delete_chunks(connection: Any, document_id: int) -> None:
         placeholders = ",".join("?" for _ in ids)
         connection.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", ids)
     connection.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+
+
+def _delete_document(
+    connection: Any, document_id: int, database: Optional[Database] = None
+) -> None:
+    related = [
+        row[0]
+        for row in connection.execute(
+            """SELECT CASE WHEN source_document_id=? THEN target_document_id
+                       ELSE source_document_id END
+               FROM relationships WHERE source_document_id=? OR target_document_id=?""",
+            (document_id, document_id, document_id),
+        )
+    ]
+    _delete_chunks(connection, document_id)
+    connection.execute("DELETE FROM metadata_fts WHERE document_id=?", (document_id,))
+    connection.execute("DELETE FROM documents WHERE id=?", (document_id,))
+    if database is not None:
+        for related_id in set(related):
+            database._refresh_metadata_index(connection, int(related_id))
 
 
 def _file_hash(path: Path) -> str:
@@ -344,9 +553,15 @@ def _chunks(document: ExtractedDocument, size: int, overlap: int) -> List[ChunkR
                 for span in document.spans
                 if span.end > chunk_start and span.start < chunk_end
             ]
-            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
             chunks.append(
-                ChunkRecord(len(chunks), text, chunk_start, chunk_end, digest, provenance)
+                ChunkRecord(
+                    len(chunks),
+                    text,
+                    chunk_start,
+                    chunk_end,
+                    hashlib.sha256(text.encode()).hexdigest(),
+                    provenance,
+                )
             )
         if end >= length:
             break
@@ -355,17 +570,65 @@ def _chunks(document: ExtractedDocument, size: int, overlap: int) -> List[ChunkR
 
 
 def _automatic_metadata(
-    path: Path, document: ExtractedDocument, content_hash: str, size: int, modified_ns: int
+    snapshot: FileSnapshot, document: ExtractedDocument, content_hash: str
 ) -> Dict[str, Any]:
+    path = snapshot.path
     first = next((line.strip("# ") for line in document.text.splitlines() if line.strip()), "")
     title = first[:160] if path.suffix.lower() in {".md", ".markdown"} and first else path.stem
     return {
         "title": title,
         "extension": path.suffix.lower(),
-        "size": size,
-        "modified_ns": modified_ns,
+        "size": snapshot.size,
+        "modified_ns": snapshot.modified_ns,
         "content_hash": content_hash,
         "word_count": len(document.text.split()),
         "source_positions": len(document.spans),
         **document.metadata,
+    }
+
+
+def _document_from_artifact(payload: Dict[str, Any]) -> ExtractedDocument:
+    return ExtractedDocument(
+        payload["text"],
+        [SourceSpan(**span) for span in payload["spans"]],
+        payload["media_type"],
+        payload.get("metadata", {}),
+        payload.get("reviews", []),
+    )
+
+
+def _apply_pdf_corrections(
+    base: Dict[str, Any],
+    corrections: Dict[int, str],
+    evidence: Sequence[Dict[str, Any]],
+    actor: str,
+) -> Dict[str, Any]:
+    pages: Dict[int, Tuple[str, Dict[str, Any]]] = {}
+    for span in base["spans"]:
+        if span["kind"] != "pdf_page" or not span["locator"].startswith("page:"):
+            continue
+        page = int(span["locator"].split(":", 1)[1])
+        pages[page] = (base["text"][span["start"] : span["end"]], span.get("metadata", {}))
+    for page, text in corrections.items():
+        pages[page] = (
+            text.strip(),
+            {"source": "review_correction", "actor": actor, "evidence": list(evidence)},
+        )
+    parts: List[str] = []
+    spans = []
+    length = 0
+    for page, (text, metadata) in sorted(pages.items()):
+        if not text.strip():
+            continue
+        separator = "\n\n" if parts else ""
+        parts.append(separator + text.strip())
+        start = length + len(separator)
+        length = start + len(text.strip())
+        spans.append(SourceSpan("pdf_page", f"page:{page}", start, length, metadata).__dict__)
+    return {
+        **base,
+        "text": "".join(parts),
+        "spans": spans,
+        "reviews": [],
+        "corrections": {str(page): text for page, text in corrections.items()},
     }

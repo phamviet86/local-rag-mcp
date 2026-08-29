@@ -3,7 +3,8 @@
     "local-rag": {
       "command": "/absolute/path/to/venv/bin/local-rag-mcp",
       "env": {
-        "LOCAL_RAG_HOME": "/absolute/path/to/.local-rag"
+        "LOCAL_RAG_HOME": "/absolute/path/to/.local-rag",
+        "LOCAL_RAG_MCP_MODE": "reader"
       }
     }
   }

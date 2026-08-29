@@ -28,9 +28,13 @@ class LocalRAG:
         return self.indexer.reconcile(path, force=force)
 
     def search(
-        self, query: str, limit: int = 8, scope: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        return [hit.__dict__ for hit in self.search_engine.search(query, limit, scope)]
+        self,
+        query: str,
+        limit: int = 8,
+        scope: Optional[str] = None,
+        mode: str = "hybrid",
+    ) -> Dict[str, Any]:
+        return self.search_engine.search(query, limit, scope, mode)
 
     def read(self, path: str, start: int = 0, length: int = 12000) -> Dict[str, Any]:
         return self.search_engine.read(path, start, length)
@@ -52,6 +56,15 @@ class LocalRAG:
     def resolve_review(self, review_id: int, resolution: str) -> Dict[str, Any]:
         self.db.resolve_review(review_id, resolution)
         return {"id": review_id, "status": "resolved"}
+
+    def correct_review(
+        self,
+        review_id: int,
+        corrected_text: str,
+        evidence: List[Dict[str, Any]],
+        actor: str,
+    ) -> Dict[str, Any]:
+        return self.indexer.correct_review(review_id, corrected_text, evidence, actor)
 
     def metadata(self, path: str) -> Dict[str, Any]:
         return self.db.metadata(path)

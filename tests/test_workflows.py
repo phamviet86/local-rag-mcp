@@ -1,13 +1,21 @@
 import json
 import tempfile
-import time
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
+
+from watchdog.events import (
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+    FileOpenedEvent,
+)
 
 from local_rag.config import Settings
 from local_rag.mcp import MCPServer
 from local_rag.service import LocalRAG
-from local_rag.watcher import WatchService
+from local_rag.watcher import CoalescingEventHandler, WatchService
 from tests.helpers import write_text_pdf
 
 
@@ -47,10 +55,10 @@ class WorkflowTests(unittest.TestCase):
         service = LocalRAG(self.settings, embeddings)
         report = service.scan()
         self.assertEqual(report["indexed"], 2)
-        self.assertEqual(len(service.search("shared")), 2)
+        self.assertEqual(len(service.search("shared")["results"]), 2)
         scoped = service.search("shared", scope="team-a")
-        self.assertEqual([hit["path"] for hit in scoped], ["team-a/one.md"])
-        self.assertEqual(service.search("orchard")[0]["path"], "team-a/one.md")
+        self.assertEqual([hit["path"] for hit in scoped["results"]], ["team-a/one.md"])
+        self.assertEqual(service.search("orchard")["results"][0]["path"], "team-a/one.md")
         self.assertTrue(service.read("team-a/one.md")["provenance"])
 
         evidence = [{"path": "team-a/one.md", "locator": "line:2", "quote": "apple decision"}]
@@ -66,45 +74,48 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(embeddings.calls, calls_before_rebuild)
         first.write_text("# Orchard\nupdated harvest", encoding="utf-8")
         self.assertEqual(service.scan("team-a/one.md")["indexed"], 1)
-        self.assertTrue(service.search("harvest"))
+        self.assertTrue(service.search("harvest")["results"])
         second.unlink()
         self.assertEqual(service.scan()["removed"], 1)
         self.assertEqual(service.status()["documents"], 1)
 
     def test_watcher_create_modify_move_delete(self):
-        settings = Settings(
-            root=self.root,
-            home=self.home,
-            chunk_chars=100,
-            chunk_overlap=10,
-            reconcile_seconds=0.2,
-        )
-        service = LocalRAG(settings)
+        service = LocalRAG(self.settings)
         watcher = WatchService(service)
-        import threading
-
-        thread = threading.Thread(target=watcher.run, daemon=True)
-        thread.start()
-        try:
-            note = self.root / "watched.txt"
-            note.write_text("created token", encoding="utf-8")
-            self.assertTrue(_wait(lambda: bool(service.search("created"))))
-            note.write_text("modified token", encoding="utf-8")
-            self.assertTrue(_wait(lambda: bool(service.search("modified"))))
-            moved = self.root / "renamed.txt"
-            note.rename(moved)
-            self.assertTrue(_wait(lambda: service.search("modified")[0]["path"] == "renamed.txt"))
-            moved.unlink()
-            self.assertTrue(_wait(lambda: service.status()["documents"] == 0))
-        finally:
-            watcher.stop()
-            thread.join(3)
+        self.assertNotIn("polling", watcher.observer.__class__.__module__)
+        note = self.root / "watched.txt"
+        note.write_text("stable content", encoding="utf-8")
+        handler = CoalescingEventHandler(service, stabilize_seconds=10, max_pending=4)
+        service.indexer.index_paths = MagicMock(
+            return_value={"changed": 1, "embedded": 0, "warnings": [], "errors": []}
+        )
+        handler.on_any_event(FileCreatedEvent(str(note)))
+        for _ in range(5):
+            handler.on_any_event(FileModifiedEvent(str(note)))
+        handler.on_any_event(FileOpenedEvent(str(note)))
+        self.assertEqual(handler.pending_count, 1)
+        result = handler.flush_ready(force=True)
+        self.assertEqual(result["changed"], 1)
+        service.indexer.index_paths.assert_called_once()
+        moved = self.root / "moved.txt"
+        deleted = self.root / "deleted.txt"
+        service.indexer.move = MagicMock(return_value=True)
+        service.indexer.remove = MagicMock(return_value=True)
+        handler.on_any_event(FileMovedEvent(str(note), str(moved)))
+        handler.on_any_event(FileDeletedEvent(str(deleted)))
+        moved_result = handler.flush_ready(force=True)
+        self.assertEqual(moved_result["changed"], 2)
+        service.indexer.move.assert_called_once()
+        service.indexer.remove.assert_called_once()
+        for index in range(8):
+            handler.on_any_event(FileModifiedEvent(str(self.root / f"{index}.txt")))
+        self.assertEqual(handler.pending_count, 4)
 
     def test_mcp_read_and_admin_workflows(self):
         (self.root / "note.txt").write_text("MCP searchable content", encoding="utf-8")
         service = LocalRAG(self.settings)
         service.scan()
-        server = MCPServer(service)
+        server = MCPServer(service, mode="reader")
         initialized = server.handle(
             {
                 "jsonrpc": "2.0",
@@ -116,30 +127,34 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(initialized["result"]["serverInfo"]["name"], "local-rag")
         listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = {tool["name"] for tool in listed["result"]["tools"]}
-        self.assertIn("local_rag_read", names)
-        self.assertIn("local_rag_admin_reindex", names)
+        self.assertIn("read", names)
+        self.assertNotIn("reindex", names)
         called = server.handle(
             {
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "tools/call",
-                "params": {"name": "local_rag_search", "arguments": {"query": "searchable"}},
+                "params": {"name": "search", "arguments": {"query": "searchable"}},
             }
         )
         payload = json.loads(called["result"]["content"][0]["text"])
-        self.assertEqual(payload[0]["path"], "note.txt")
+        self.assertEqual(payload["results"][0]["path"], "note.txt")
+        reviewer = MCPServer(service, mode="reviewer")
         failed = server.handle(
             {
                 "jsonrpc": "2.0",
                 "id": 4,
                 "method": "tools/call",
                 "params": {
-                    "name": "local_rag_admin_metadata_add",
+                    "name": "add_metadata",
                     "arguments": {"path": "note.txt", "key": "x", "value": 1, "evidence": []},
                 },
             }
         )
         self.assertTrue(failed["result"]["isError"])
+        self.assertIn("correct_page", reviewer.allowed)
+        self.assertNotIn("reconcile", reviewer.allowed)
+        self.assertIn("reconcile", MCPServer(service, mode="admin").allowed)
 
     def test_pdf_artifact_and_review_are_durable(self):
         pdf = self.root / "document.pdf"
@@ -155,18 +170,6 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(reviews[0]["path"], str(pdf.resolve()))
         second = service.scan()
         self.assertEqual(second["unchanged"], 1)
-
-
-def _wait(predicate, timeout=5):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            if predicate():
-                return True
-        except (IndexError, ValueError):
-            pass
-        time.sleep(0.05)
-    return False
 
 
 if __name__ == "__main__":

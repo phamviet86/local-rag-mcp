@@ -24,8 +24,9 @@ The default data root is `~/.local-rag` on macOS, Linux, and Windows. Override i
 ```text
 ~/.local-rag/
   config.json                 one recursive source root and exclusions
-  index.sqlite3               metadata, FTS5, vectors, jobs, reviews, relationships
+  index.sqlite3               metadata/relationship FTS5, vectors, reviews, revisions
   artifacts/extracted/        source-hash-addressed extracted text and provenance
+  artifacts/revisions/        additive human-corrected PDF text revisions
   models/                     local OCR and embedding models
   cache/                      local inference caches
   runtime/                    pinned PDFium and ONNX Runtime libraries
@@ -45,10 +46,13 @@ local-rag rebuild --all                # force complete rebuild
 local-rag serve                        # continuous watch + periodic reconciliation
 ```
 
-Create, modify, delete, rename, and move events are handled by a cross-platform polling observer.
-A full reconciliation runs every 60 seconds by default to recover missed events. Extraction and
-chunk preparation finish before a short SQLite transaction replaces the previous index state.
-Jobs and PDF review items survive restarts; source files are never modified.
+Create, modify, delete, rename, and move events use Watchdog's native platform observer. Irrelevant
+events are filtered and a bounded queue coalesces changes until writes stabilize. A full
+reconciliation runs every 60 seconds by default to recover missed events. Reconciliation reads one
+document snapshot, trusts matching size/mtime without hashing, and hashes only candidates. If a
+candidate's content hash is unchanged, its stored stat metadata is refreshed without extraction.
+Extraction and chunk preparation finish before a short SQLite transaction replaces index state.
+PDF review items and corrections survive restarts; source files are never modified.
 
 Supported extraction and provenance:
 
@@ -59,7 +63,9 @@ Supported extraction and provenance:
 - PDF: page numbers and native/OCR provenance from `firecrawl/pdf-inspector==1.15.0`.
 
 Extracted artifacts are keyed by SHA-256 source hash. Unchanged files reuse artifacts, chunks, and
-vectors. Vector cache keys combine chunk hash, provider, and model.
+vectors. Missing unique chunk embeddings are collected after FTS indexing and submitted in batches
+of at most 128. Vector cache keys combine chunk hash, provider, and model. Provider failures produce
+warnings rather than rolling back working FTS content.
 
 ## Local PDF OCR
 
@@ -83,7 +89,14 @@ pages enter the durable queue:
 ```bash
 local-rag review list
 local-rag review resolve 12 "Checked against the source scan"
+local-rag review correct 12 "Corrected searchable page text" \
+  '[{"path":"scan.pdf","locator":"page:4","quote":"checked against scan"}]' \
+  --actor reviewer-name
 ```
+
+A correction creates an additive revision artifact with evidence and actor, resolves the review,
+and rebuilds only that document's chunks. The base OCR artifact is retained and the unchanged PDF
+is not OCRed again.
 
 ## Search and embeddings
 
@@ -92,10 +105,20 @@ Search is global unless `--scope` is supplied:
 ```bash
 local-rag search "renewal clause"
 local-rag search "renewal clause" --scope legal/contracts
+local-rag search "renewal clause" --mode full_text
+local-rag search "renewal clause" --mode semantic
 local-rag read legal/contracts/example.docx
 ```
 
-FTS5 is always local. Embeddings are optional and vectors always remain in SQLite.
+Modes are `full_text`, `semantic`, and `hybrid` (default). Hybrid reports its effective mode and
+falls back to full text with a warning if embedding inference is unavailable. Semantic-only fails
+clearly when its provider or cached corpus vectors are unavailable. Scope is absent for global
+search; literal `%`, `_`, and backslashes in subfolder names are escaped. Results include concise
+mode, warning, match-source, and provenance information.
+
+FTS5 is always local. Automatic metadata, agent metadata, and relationships share an efficient
+local metadata FTS index. Embeddings are optional and vectors always remain in SQLite. Local models
+load lazily; long-lived services retain a bounded 128-query embedding cache.
 
 Local inference (downloads the selected model into the local cache):
 
@@ -114,7 +137,8 @@ export LOCAL_RAG_OPENAI_BASE_URL=https://openrouter.ai/api/v1
 export LOCAL_RAG_OPENAI_API_KEY='...'
 ```
 
-The project never enables a paid provider implicitly.
+The project never enables a paid provider implicitly. Remote/local provider failure cannot make
+full-text indexing or search unavailable.
 
 ## Evidence-backed metadata and relationships
 
@@ -122,6 +146,8 @@ Automatic metadata (hash, size, title, type, word count, source-position count, 
 details) is stored during indexing. Agents/operators can add facts and relationships only with a
 non-empty evidence array. Each evidence item must name an indexed path and include a locator or
 quote.
+Automatic and agent-added values plus relationship types/paths are searchable in `full_text` and
+`hybrid` modes.
 
 ```bash
 local-rag metadata add report.md status '"approved"' \
@@ -133,21 +159,25 @@ local-rag relationship report.md appendix.xlsx supports \
 
 ## MCP
 
-Adapt [`config/mcp.json.example`](config/mcp.json.example), or run `local-rag mcp`. The stdio server
-uses newline-delimited JSON-RPC and exposes clearly separated tools:
+Adapt [`config/mcp.json.example`](config/mcp.json.example), or run `local-rag mcp`. The MCP server
+namespace supplies `local-rag`, so tool names stay short. Stdio uses newline-delimited JSON-RPC.
+Default `reader` mode exposes only:
 
-Read operations:
+- `search`, `read`, `status`, `metadata`, `reviews`
 
-- `local_rag_search`, `local_rag_read`, `local_rag_status`
-- `local_rag_review_list`, `local_rag_metadata_get`
+Explicit reviewer mode adds mutations:
 
-Administrative mutations:
+- `local-rag mcp --mode reviewer`
+- `correct_page`, `resolve_review`, `add_metadata`, `add_relationship`
 
-- `local_rag_admin_reconcile`, `local_rag_admin_reindex`
-- `local_rag_admin_review_resolve`
-- `local_rag_admin_metadata_add`, `local_rag_admin_relationship_add`
+Explicit admin mode adds `reconcile` and `reindex`:
 
-Administrative target/scope values are resolved against the single configured root.
+```bash
+local-rag mcp --mode admin
+# or set LOCAL_RAG_MCP_MODE=admin for local-rag-mcp
+```
+
+Mutation targets/scopes are still resolved against the single configured root.
 
 ## Verification
 
@@ -160,13 +190,16 @@ python -m compileall -q src tests
 ```
 
 The tests cover configuration containment, checksum-verified runtime installation, TXT/Markdown/
-DOCX/XLSX/PPTX/PDF extraction, provenance, incremental and forced rebuilds, vector caching,
-global/scoped search, deletion, durable artifacts/reviews, evidence validation, real watcher events,
-and MCP initialization/tool calls.
+DOCX/XLSX/PPTX/PDF extraction, provenance, fast stat reconciliation, bounded batch embeddings,
+provider fallback, all search modes, literal-safe global/scoped search, indexed metadata and
+relationships, additive OCR correction, native watcher selection/coalescing, deletion, and MCP mode
+exposure/tool calls. A 1,000-file regression proves no hashing on unchanged files and at most eight
+embedding calls for 128-item batches.
 
 ## Remaining design boundaries
 
 Vectors are JSON arrays scored in process, appropriate for a personal/local corpus rather than a
-multi-million-chunk deployment. The service has no authentication boundary around administrative
-MCP tools, no rich Office chart/image OCR, no semantic reranker, and no GPU runtime manager. Intel
-macOS is not supported by the pinned ONNX Runtime release used for the reproducible OCR path.
+multi-million-chunk deployment. The explicit reviewer/admin MCP modes are an exposure boundary, not
+authentication. The service has no rich Office chart/image OCR, semantic reranker, or GPU runtime
+manager. Intel macOS is not supported by the pinned ONNX Runtime release used for the reproducible
+OCR path.

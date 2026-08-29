@@ -1,59 +1,134 @@
 import threading
 import time
+from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Optional
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler, FileSystemMovedEvent
-from watchdog.observers.polling import PollingObserver
+from watchdog.observers import Observer
 
 from .service import LocalRAG
 
 
-class IndexEventHandler(FileSystemEventHandler):
-    def __init__(self, service: LocalRAG, debounce_seconds: float = 0.25):
+@dataclass(frozen=True)
+class PendingChange:
+    kind: str
+    path: Path
+    source: Optional[Path]
+    ready_at: float
+
+
+class CoalescingEventHandler(FileSystemEventHandler):
+    RELEVANT_EVENTS = {"created", "modified", "deleted", "moved", "closed"}
+
+    def __init__(
+        self,
+        service: LocalRAG,
+        stabilize_seconds: float = 0.35,
+        max_pending: int = 1024,
+    ):
         self.service = service
-        self.debounce_seconds = debounce_seconds
-        self._seen: Dict[str, float] = {}
+        self.stabilize_seconds = stabilize_seconds
+        self.max_pending = max_pending
+        self._pending: OrderedDict[str, PendingChange] = OrderedDict()
         self._lock = threading.Lock()
 
     def on_any_event(self, event: FileSystemEvent) -> None:
-        if event.is_directory:
+        if event.is_directory or event.event_type not in self.RELEVANT_EVENTS:
             return
-        key = f"{event.event_type}:{event.src_path}:{getattr(event, 'dest_path', '')}"
-        with self._lock:
-            now = time.monotonic()
-            if now - self._seen.get(key, 0) < self.debounce_seconds:
+        if isinstance(event, FileSystemMovedEvent):
+            source, path, kind = Path(event.src_path), Path(event.dest_path), "moved"
+            if not self._relevant(source) and not self._relevant(path):
                 return
-            self._seen[key] = now
-        job = self.service.db.start_job(f"watch:{event.event_type}", event.src_path)
-        try:
-            if isinstance(event, FileSystemMovedEvent):
-                changed = self.service.indexer.move(Path(event.src_path), Path(event.dest_path))
-            elif event.event_type == "deleted":
-                changed = self.service.indexer.remove(Path(event.src_path))
+        else:
+            source, path, kind = None, Path(event.src_path), event.event_type
+            if not self._relevant(path):
+                return
+        key = str(path.resolve())
+        ready_at = time.monotonic() + self.stabilize_seconds
+        with self._lock:
+            previous = self._pending.get(key)
+            if previous is not None and previous.kind == "moved" and kind != "deleted":
+                change = PendingChange("moved", path, previous.source, ready_at)
             else:
-                changed = self.service.indexer.index_file(Path(event.src_path))
-            self.service.db.finish_job(job, "completed", {"changed": changed})
-        except Exception as exc:
-            self.service.db.finish_job(job, "failed", {"error": str(exc)})
+                change = PendingChange(kind, path, source, ready_at)
+            self._pending[key] = change
+            self._pending.move_to_end(key)
+            while len(self._pending) > self.max_pending:
+                self._pending.popitem(last=False)
+
+    def _relevant(self, path: Path) -> bool:
+        resolved = path.resolve()
+        return (
+            self.service.settings.contains(resolved)
+            and not self.service.settings.excluded(resolved)
+            and resolved.suffix.lower() in self.service.settings.extensions
+        )
+
+    def flush_ready(self, force: bool = False) -> Dict[str, object]:
+        now = time.monotonic()
+        with self._lock:
+            ready = [
+                (key, change)
+                for key, change in self._pending.items()
+                if force or change.ready_at <= now
+            ]
+            for key, _ in ready:
+                self._pending.pop(key, None)
+        paths: List[Path] = []
+        changed = 0
+        errors: List[str] = []
+        for _, change in ready:
+            try:
+                if change.kind == "moved" and change.source is not None:
+                    changed += int(self.service.indexer.move(change.source, change.path))
+                elif change.kind == "deleted":
+                    changed += int(self.service.indexer.remove(change.path))
+                else:
+                    paths.append(change.path)
+            except Exception as exc:
+                errors.append(f"{change.path}: {exc}")
+        indexed = (
+            self.service.indexer.index_paths(paths)
+            if paths
+            else {
+                "changed": 0,
+                "embedded": 0,
+                "warnings": [],
+                "errors": [],
+            }
+        )
+        indexed["changed"] = int(indexed["changed"]) + changed
+        indexed["errors"] = [*errors, *indexed["errors"]]
+        return indexed
+
+    @property
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._pending)
 
 
 class WatchService:
     def __init__(self, service: LocalRAG):
         self.service = service
-        self.observer = PollingObserver(timeout=0.1)
+        self.observer = Observer()
+        self.handler = CoalescingEventHandler(service)
         self.stop_event = threading.Event()
 
     def run(self) -> None:
         self.service.scan()
-        self.observer.schedule(
-            IndexEventHandler(self.service), str(self.service.settings.root), recursive=True
-        )
+        self.observer.schedule(self.handler, str(self.service.settings.root), recursive=True)
         self.observer.start()
+        last_reconcile = time.monotonic()
         try:
-            while not self.stop_event.wait(self.service.settings.reconcile_seconds):
-                self.service.scan()
+            while not self.stop_event.wait(0.1):
+                self.handler.flush_ready()
+                if time.monotonic() - last_reconcile >= self.service.settings.reconcile_seconds:
+                    self.service.scan()
+                    last_reconcile = time.monotonic()
         finally:
+            self.handler.flush_ready(force=True)
             self.observer.stop()
             self.observer.join()
 

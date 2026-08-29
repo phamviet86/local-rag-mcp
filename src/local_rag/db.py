@@ -1,6 +1,5 @@
 import json
 import sqlite3
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence
@@ -28,11 +27,6 @@ MIGRATIONS = [
       vector_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY(chunk_hash, provider, model)
     );
-    CREATE TABLE jobs (
-      id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL,
-      detail_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
     CREATE TABLE reviews (
       id INTEGER PRIMARY KEY, document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
       path TEXT NOT NULL, content_hash TEXT NOT NULL, page INTEGER, reason TEXT NOT NULL,
@@ -52,7 +46,29 @@ MIGRATIONS = [
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(source_document_id, target_document_id, relation)
     );
+    """,
     """
+    DROP TABLE IF EXISTS jobs;
+    ALTER TABLE documents ADD COLUMN effective_artifact_path TEXT;
+    CREATE TABLE review_revisions (
+      id INTEGER PRIMARY KEY,
+      review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+      document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+      page INTEGER NOT NULL, corrected_text TEXT NOT NULL, evidence_json TEXT NOT NULL,
+      actor TEXT NOT NULL, artifact_path TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX review_revisions_document_idx ON review_revisions(document_id);
+    CREATE INDEX agent_metadata_document_idx ON agent_metadata(document_id);
+    CREATE INDEX relationships_source_idx ON relationships(source_document_id);
+    CREATE INDEX relationships_target_idx ON relationships(target_document_id);
+    CREATE VIRTUAL TABLE metadata_fts USING fts5(
+      content, document_id UNINDEXED, kind UNINDEXED, provenance UNINDEXED,
+      tokenize='unicode61'
+    );
+    INSERT INTO metadata_fts(content,document_id,kind,provenance)
+      SELECT title || ' ' || metadata_json,id,'automatic','[]' FROM documents;
+    """,
 ]
 
 
@@ -97,22 +113,6 @@ class Database:
         finally:
             connection.close()
 
-    def start_job(self, kind: str, target: str) -> str:
-        job_id = str(uuid.uuid4())
-        with self.connect() as connection:
-            connection.execute(
-                "INSERT INTO jobs(id,kind,target,status,detail_json) VALUES(?,?,?,?,?)",
-                (job_id, kind, target, "running", "{}"),
-            )
-        return job_id
-
-    def finish_job(self, job_id: str, status: str, detail: Dict[str, Any]) -> None:
-        with self.connect() as connection:
-            connection.execute(
-                "UPDATE jobs SET status=?,detail_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (status, json.dumps(detail, ensure_ascii=False), job_id),
-            )
-
     def document(self, path: Path) -> Optional[sqlite3.Row]:
         with self.connect() as connection:
             return connection.execute(
@@ -128,6 +128,10 @@ class Database:
             raise ValueError(f"indexed document not found: {path}")
         return row
 
+    def document_snapshot(self) -> List[sqlite3.Row]:
+        with self.connect() as connection:
+            return connection.execute("SELECT * FROM documents").fetchall()
+
     def stats(self) -> Dict[str, int]:
         with self.connect() as connection:
             return {
@@ -137,8 +141,8 @@ class Database:
                 "open_reviews": connection.execute(
                     "SELECT count(*) FROM reviews WHERE status='open'"
                 ).fetchone()[0],
-                "running_jobs": connection.execute(
-                    "SELECT count(*) FROM jobs WHERE status='running'"
+                "review_revisions": connection.execute(
+                    "SELECT count(*) FROM review_revisions"
                 ).fetchone()[0],
             }
 
@@ -170,6 +174,7 @@ class Database:
                    VALUES(?,?,?,?,?)""",
                 (document["id"], key, json.dumps(value), json.dumps(evidence), actor),
             )
+            self._refresh_metadata_index(connection, int(document["id"]))
             return int(cursor.lastrowid)
 
     def metadata(self, path: str) -> Dict[str, Any]:
@@ -209,7 +214,61 @@ class Database:
                    DO UPDATE SET evidence_json=excluded.evidence_json,actor=excluded.actor""",
                 (source_doc["id"], target_doc["id"], relation, json.dumps(evidence), actor),
             )
+            self._refresh_metadata_index(connection, int(source_doc["id"]))
+            self._refresh_metadata_index(connection, int(target_doc["id"]))
             return int(cursor.lastrowid)
+
+    def review(self, review_id: int) -> sqlite3.Row:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT r.*,d.relative_path,d.title,d.artifact_path,d.effective_artifact_path
+                   FROM reviews r JOIN documents d ON d.id=r.document_id WHERE r.id=?""",
+                (review_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"review not found: {review_id}")
+        return row
+
+    def _refresh_metadata_index(self, connection: sqlite3.Connection, document_id: int) -> None:
+        connection.execute("DELETE FROM metadata_fts WHERE document_id=?", (document_id,))
+        document = connection.execute(
+            "SELECT title,metadata_json FROM documents WHERE id=?", (document_id,)
+        ).fetchone()
+        if document is None:
+            return
+        connection.execute(
+            "INSERT INTO metadata_fts(content,document_id,kind,provenance) VALUES(?,?,?,?)",
+            (f"{document['title']} {document['metadata_json']}", document_id, "automatic", "[]"),
+        )
+        for entry in connection.execute(
+            "SELECT key,value_json,evidence_json FROM agent_metadata WHERE document_id=?",
+            (document_id,),
+        ):
+            connection.execute(
+                "INSERT INTO metadata_fts(content,document_id,kind,provenance) VALUES(?,?,?,?)",
+                (
+                    f"{entry['key']} {entry['value_json']}",
+                    document_id,
+                    "agent_metadata",
+                    entry["evidence_json"],
+                ),
+            )
+        for relationship in connection.execute(
+            """SELECT r.relation,r.evidence_json,s.relative_path source,t.relative_path target
+               FROM relationships r JOIN documents s ON s.id=r.source_document_id
+               JOIN documents t ON t.id=r.target_document_id
+               WHERE r.source_document_id=? OR r.target_document_id=?""",
+            (document_id, document_id),
+        ):
+            connection.execute(
+                "INSERT INTO metadata_fts(content,document_id,kind,provenance) VALUES(?,?,?,?)",
+                (
+                    f"{relationship['relation']} {relationship['source']} {relationship['target']}",
+                    document_id,
+                    "relationship",
+                    relationship["evidence_json"],
+                ),
+            )
 
     def _validate_evidence(self, evidence: Sequence[Dict[str, Any]]) -> None:
         if not evidence:
