@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import tarfile
+import tempfile
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -109,6 +110,47 @@ class OCRRuntimeManager:
         (self.runtime_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         return manifest
 
+    def provision_and_verify(self) -> dict[str, str]:
+        """Install pinned native libraries and warm the pinned OCR model cache."""
+        manifest = self.install()
+        if not self.configure():
+            raise RuntimeError("installed OCR runtime could not be configured")
+        self.model_dir.mkdir(parents=True, exist_ok=True)
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
+                temporary = Path(handle.name)
+                handle.write(_smoke_pdf())
+            import pdf_inspector
+
+            first = pdf_inspector.process_pdf_with_ocr(
+                str(temporary),
+                mode="force",
+                page_numbers=[1],
+                model_directory=str(self.model_dir),
+                offline=False,
+            )
+            if not first.pages:
+                raise RuntimeError("OCR verification produced no page result")
+            cached = pdf_inspector.process_pdf_with_ocr(
+                str(temporary),
+                mode="force",
+                page_numbers=[1],
+                model_directory=str(self.model_dir),
+                offline=True,
+            )
+            if not cached.pages:
+                raise RuntimeError("OCR model cache failed offline verification")
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        manifest["model_cache"] = str(self.model_dir)
+        manifest["verified"] = "true"
+        (self.runtime_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        return manifest
+
     def paths(self) -> RuntimePaths:
         pdfium_names = ("pdfium.dll", "libpdfium.dylib", "libpdfium.so")
         ort_names = ("onnxruntime.dll", "libonnxruntime.dylib", "libonnxruntime.so")
@@ -170,3 +212,29 @@ def _find_library(root: Path, names: tuple[str, ...]) -> Path:
         if matches:
             return matches[0].resolve()
     raise FileNotFoundError(f"runtime library not found below {root}")
+
+
+def _smoke_pdf() -> bytes:
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+        ),
+        b"<< /Length 41 >>\nstream\nBT /F1 18 Tf 20 100 Td (OCR check) Tj ET\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    payload = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, obj in enumerate(objects, 1):
+        offsets.append(len(payload))
+        payload.extend(f"{number} 0 obj\n".encode())
+        payload.extend(obj + b"\nendobj\n")
+    xref = len(payload)
+    payload.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    payload.extend(b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets[1:]))
+    payload.extend(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
+    return bytes(payload)

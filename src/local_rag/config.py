@@ -35,6 +35,7 @@ class Settings:
     embedding_model: str | None = None
     openai_base_url: str = "https://openrouter.ai/api/v1"
     openai_api_key: str | None = None
+    ocr_mode: str = "unconfigured"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "root", self.root.expanduser().resolve())
@@ -44,6 +45,8 @@ class Settings:
             raise ValueError("invalid chunk size or overlap")
         if self.embedding_provider not in {"none", "local", "openai"}:
             raise ValueError("embedding_provider must be none, local, or openai")
+        if self.ocr_mode not in {"unconfigured", "full", "no-ocr"}:
+            raise ValueError("ocr_mode must be unconfigured, full, or no-ocr")
 
     @property
     def database(self) -> Path:
@@ -94,6 +97,7 @@ class Settings:
             "embedding_provider": self.embedding_provider,
             "embedding_model": self.embedding_model,
             "openai_base_url": self.openai_base_url,
+            "ocr_mode": self.ocr_mode,
         }
         temporary = self.config_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -105,7 +109,8 @@ class Settings:
         path = data_home / "config.json"
         if not path.exists():
             raise FileNotFoundError(
-                f"not initialized: {path}; run 'local-rag-mcp init [LEGACY_ROOT]'"
+                f"not initialized: {path}; run 'local-rag-mcp setup --full' or "
+                "'local-rag-mcp setup --no-ocr'"
             )
         payload = json.loads(path.read_text(encoding="utf-8"))
         return cls(
@@ -131,6 +136,7 @@ class Settings:
             openai_api_key=os.environ.get("LOCAL_RAG_MCP_OPENAI_API_KEY")
             or os.environ.get("LOCAL_RAG_OPENAI_API_KEY")
             or None,
+            ocr_mode=str(payload.get("ocr_mode", "unconfigured")),
         )
 
     def contains(self, path: Path) -> bool:

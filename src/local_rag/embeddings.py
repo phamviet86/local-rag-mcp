@@ -5,6 +5,7 @@ import json
 import math
 import threading
 from collections.abc import Sequence
+from importlib.util import find_spec
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -118,6 +119,31 @@ def configured_provider(settings: Settings) -> EmbeddingProvider | None:
     return OpenAIEmbeddings(
         settings.openai_base_url, settings.openai_api_key or "", settings.embedding_model
     )
+
+
+def provider_readiness(
+    settings: Settings, provider: EmbeddingProvider | None
+) -> tuple[bool, str, str | None]:
+    """Report configured inference usability without calling a local model or remote API."""
+    if provider is None:
+        return False, "vectors are unavailable; FTS search remains available", None
+    if isinstance(provider, UnavailableEmbeddings):
+        return False, provider.reason, "configure_embedding_model"
+    if isinstance(provider, OpenAIEmbeddings):
+        if not provider.model.strip():
+            return False, "LOCAL_RAG_MCP_EMBEDDING_MODEL is required", "configure_embedding_model"
+        if not provider.api_key.strip():
+            return False, "LOCAL_RAG_MCP_OPENAI_API_KEY is required", "configure_openai_key"
+        return True, "OpenAI-compatible embedding provider is configured (not contacted)", None
+    if isinstance(provider, LocalEmbeddings):
+        if not provider.model_name.strip():
+            return False, "LOCAL_RAG_MCP_EMBEDDING_MODEL is required", "configure_embedding_model"
+        if find_spec("sentence_transformers") is None:
+            return False, "local embedding dependency is not installed", "install_local_embeddings"
+        return True, "local embedding provider and model are configured", None
+    if settings.embedding_provider != "none" and not settings.embedding_model:
+        return False, "LOCAL_RAG_MCP_EMBEDDING_MODEL is required", "configure_embedding_model"
+    return True, "embedding provider is configured", None
 
 
 def cache_identity(provider: EmbeddingProvider) -> tuple[str, str]:

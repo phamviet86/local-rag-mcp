@@ -115,4 +115,5 @@ def source_settings(base: Settings, source: SourceRecord) -> Settings:
         embedding_model=base.embedding_model,
         openai_base_url=base.openai_base_url,
         openai_api_key=base.openai_api_key,
+        ocr_mode=base.ocr_mode,
     )

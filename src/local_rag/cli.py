@@ -4,6 +4,7 @@ import argparse
 import json
 from collections.abc import Sequence
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,15 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     initialize.add_argument("root", type=Path, nargs="?")
     initialize.add_argument("--exclude", action="append", default=[])
     initialize.add_argument("--reconcile-seconds", type=float, default=60)
+    setup = commands.add_parser("setup", help="explicitly configure full OCR or no-OCR mode")
+    setup.add_argument("root", type=Path, nargs="?")
+    setup.add_argument("--exclude", action="append", default=[])
+    setup.add_argument("--reconcile-seconds", type=float, default=60)
+    setup_mode = setup.add_mutually_exclusive_group(required=True)
+    setup_mode.add_argument("--full", action="store_true", help="provision and verify local OCR")
+    setup_mode.add_argument(
+        "--no-ocr", action="store_true", help="index supported files without local OCR"
+    )
 
     source = commands.add_parser("source", help="manage local and Google Drive sources")
     source_commands = source.add_subparsers(dest="source_command", required=True)
@@ -73,6 +83,8 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     read.add_argument("--start", type=int, default=0)
     read.add_argument("--length", type=int, default=12000)
     commands.add_parser("status")
+    doctor = commands.add_parser("doctor", help="run actionable readiness checks")
+    doctor.add_argument("--json", action="store_true", help="emit the stable JSON contract")
     commands.add_parser(
         "serve", aliases=["watch"], help="watch local roots and periodically sync all sources"
     )
@@ -125,7 +137,7 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
     home = args.home.expanduser().resolve()
-    if args.command == "init":
+    if args.command in {"init", "setup"}:
         root = (args.root or home).expanduser().resolve()
         if args.root and not root.is_dir():
             raise SystemExit(f"source root is not a directory: {root}")
@@ -134,10 +146,51 @@ def main(argv: Sequence[str] | None = None) -> int:
             home=home,
             exclusions=parse_exclusions(args.exclude),
             reconcile_seconds=args.reconcile_seconds,
+            ocr_mode=("full" if args.command == "setup" and args.full else "no-ocr"),
         )
         settings.save()
         service = MultiSourceRAG(settings)
-        _print({"initialized": True, **service.status()})
+        setup_status = service.status()
+        next_step = setup_status.pop("error", None)
+        if args.command == "setup" and args.full:
+            try:
+                manifest = service.ocr_runtime.provision_and_verify()
+            except Exception as exc:
+                _print(
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": "ocr_setup_failed",
+                            "message": str(exc),
+                            "actions": [
+                                {"command": "local-rag-mcp setup --no-ocr"},
+                                {"command": "local-rag-mcp setup --full"},
+                            ],
+                        },
+                    }
+                )
+                return 2
+            setup_status = service.status()
+            next_step = setup_status.pop("error", None)
+            _print(
+                {
+                    "ok": True,
+                    "initialized": True,
+                    "ocr": manifest,
+                    "next_step": next_step,
+                    **setup_status,
+                }
+            )
+        else:
+            _print(
+                {
+                    "ok": True,
+                    "initialized": True,
+                    "warning": "OCR-routed PDF pages will enter review until full OCR is set up.",
+                    "next_step": next_step,
+                    **setup_status,
+                }
+            )
         return 0
     if args.command == "auth-google":
         from .drive import authorize_google
@@ -150,7 +203,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     output: object
     if command == "source":
         if args.source_command == "list":
-            output = service.sources()
+            output = service.source_summary()
         elif args.source_command == "add-local":
             output = service.add_local_source(args.name, args.root, args.exclude)
         elif args.source_command == "add-drive":
@@ -186,6 +239,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         output = service.read(args.path, args.source, args.start, args.length)
     elif command == "status":
         output = service.status()
+    elif command == "doctor":
+        output = service.doctor()
     elif command in {"serve", "watch"}:
         from .watcher import MultiSourceWatchService
 
@@ -229,15 +284,42 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.target_source,
         )
     elif command == "ocr" and args.ocr_command == "install":
-        output = service.ocr_runtime.install()
+        output = service.ocr_runtime.provision_and_verify()
+        replace(service.settings, ocr_mode="full").save()
     else:
         raise AssertionError(f"unhandled command: {command}")
     _print(output)
-    return 1 if isinstance(output, dict) and output.get("errors") else 0
+    if isinstance(output, dict):
+        if output.get("error") or output.get("ok") is False:
+            return 2
+        if output.get("errors"):
+            return 1
+    return 0
 
 
 def legacy_main(argv: Sequence[str] | None = None) -> int:
     return main(argv)
+
+
+def entrypoint(argv: Sequence[str] | None = None) -> int:
+    try:
+        return main(argv)
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        _print(
+            {
+                "ok": False,
+                "error": {
+                    "code": type(exc).__name__.removesuffix("Error").lower(),
+                    "message": str(exc),
+                    "actions": [],
+                },
+            }
+        )
+        return 2
+
+
+def legacy_entrypoint(argv: Sequence[str] | None = None) -> int:
+    return entrypoint(argv)
 
 
 def _json(value: str, label: str) -> Any:
@@ -259,4 +341,4 @@ def _print(value: Any) -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(entrypoint())

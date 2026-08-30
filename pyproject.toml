@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-rag-mcp"
-version = "0.4.2"
+version = "0.5.0"
 description = "Local-first multi-source document indexing and MCP retrieval"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,9 +25,9 @@ local-embeddings = ["sentence-transformers>=3,<7"]
 dev = ["mypy>=1.11,<2", "pytest>=8,<10", "pytest-cov>=5,<8", "ruff>=0.5"]
 
 [project.scripts]
-local-rag-mcp = "local_rag.cli:main"
+local-rag-mcp = "local_rag.cli:entrypoint"
 local-rag-mcp-server = "local_rag.mcp:main"
-local-rag = "local_rag.cli:legacy_main"
+local-rag = "local_rag.cli:legacy_entrypoint"
 
 [tool.setuptools.packages.find]
 where = ["src"]

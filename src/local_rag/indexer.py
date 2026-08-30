@@ -156,6 +156,19 @@ class Indexer:
         embedding = self.embed_pending()
         report["embedded"] = embedding["embedded"]
         report["warnings"].extend(embedding["warnings"])
+        if report["indexed"] and self.embeddings is None:
+            report["warnings"].append(
+                "embeddings are not configured; FTS indexing succeeded but vectors are unavailable"
+            )
+        missing_ocr = sum(
+            review.get("reason") == "ocr_runtime_missing"
+            for document in prepared
+            for review in document.extracted.reviews
+        )
+        if missing_ocr:
+            report["warnings"].append(
+                f"{missing_ocr} PDF page(s) require OCR and were added to the review queue"
+            )
         return report
 
     def _classify(

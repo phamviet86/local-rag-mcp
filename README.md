@@ -8,20 +8,25 @@ relationships, OCR reviews, and source state. Extracted text and model/runtime c
 The project is pre-1.0 and currently has no selected license. Python 3.11+ and SQLite with FTS5 are
 required.
 
-## Install and initialize
+## Install and set up
 
 ```bash
 python3.11 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e '.[dev]'
 
-local-rag-mcp init
+local-rag-mcp setup --full    # provision and verify pinned local OCR
+# or: local-rag-mcp setup --no-ocr
 local-rag-mcp source add-local work /absolute/path/to/documents
 local-rag-mcp reconcile
-local-rag-mcp status
+local-rag-mcp doctor --json
 ```
 
-`init /existing/root` is an explicit compatibility shortcut that registers the old single local
+`setup --no-ocr` remains fully usable for native extraction and FTS; OCR-routed pages are queued for
+review. Missing embeddings similarly leaves FTS available. See [`docs/setup.md`](docs/setup.md) for
+operator setup and [`docs/agents.md`](docs/agents.md) for agent behavior.
+
+`init /existing/root` is a no-OCR compatibility shortcut that registers the old single local
 root as source `default`. Otherwise add any number of sources after `init`.
 
 The data layout is:
@@ -221,7 +226,7 @@ LOCAL_RAG_MCP_PROFILE=reviewer local-rag-mcp-server
 LOCAL_RAG_MCP_PROFILE=admin local-rag-mcp-server
 ```
 
-- `reader`: `search`, `read`, `status`, `sources`, `metadata`, `reviews`.
+- `reader`: `search`, `read`, `status`, `doctor`, `sources`, `metadata`, `reviews`.
 - `reviewer`: reader tools plus page correction/review resolution and evidence-backed metadata and
   relationships.
 - `admin`: reviewer tools plus reconcile/reindex, enable/disable, and confirmed source removal.

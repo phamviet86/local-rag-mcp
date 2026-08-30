@@ -10,6 +10,17 @@ from .config import Settings
 from .search import SEARCH_MODES
 from .service import LocalRAG, MultiSourceRAG
 
+AGENT_INSTRUCTIONS = (
+    "Start with doctor, status, and sources. Search is global across enabled sources unless source "
+    "or folder is supplied; cite returned source, path, URL, hash/revision, page, and locator. "
+    "When no source exists, ask the operator to choose a local folder or Google Drive "
+    "root/account; "
+    "never request credential contents in chat. Source and OAuth setup use the local-rag-mcp CLI. "
+    "Missing OCR routes affected PDF pages to durable review while other indexing continues. "
+    "Missing "
+    "embeddings leaves full_text search available. Mutation tools require reviewer/admin profiles."
+)
+
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {
@@ -56,7 +67,16 @@ READER_TOOLS = [
         "description": "Inspect source/index/provider status.",
         "inputSchema": _schema({}),
     },
-    {"name": "sources", "description": "List configured sources.", "inputSchema": _schema({})},
+    {
+        "name": "doctor",
+        "description": "Run actionable database, source, OCR, embedding, review, and sync checks.",
+        "inputSchema": _schema({}),
+    },
+    {
+        "name": "sources",
+        "description": "List sources or return structured setup guidance when none exist.",
+        "inputSchema": _schema({}),
+    },
     {
         "name": "metadata",
         "description": "Read automatic/agent metadata and document relationships.",
@@ -182,7 +202,7 @@ class MCPServer:
         if mode == "admin":
             self.tools.extend(ADMIN_TOOLS)
         if not isinstance(service, MultiSourceRAG):
-            self.tools = [tool for tool in self.tools if tool["name"] != "sources"]
+            self.tools = [tool for tool in self.tools if tool["name"] not in {"sources", "doctor"}]
         self.allowed = {tool["name"] for tool in self.tools}
 
     def call(self, name: str, values: dict[str, Any]) -> Any:
@@ -217,8 +237,10 @@ class MCPServer:
             )
         if name == "status":
             return self.service.status()
+        if name == "doctor":
+            return self.service.doctor()
         if name == "sources":
-            return self.service.sources()
+            return self.service.source_summary()
         if name == "metadata":
             return (
                 self.service.metadata(values["path"], values.get("source"))
@@ -305,6 +327,7 @@ class MCPServer:
                     ),
                     "capabilities": {"tools": {"listChanged": False}},
                     "serverInfo": {"name": "local-rag-mcp", "version": __version__},
+                    "instructions": AGENT_INSTRUCTIONS,
                 }
             elif method == "ping":
                 result = {}
@@ -339,12 +362,7 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
     server = SDKServer(
         "local-rag-mcp",
         version=__version__,
-        instructions=(
-            "Search all enabled local and Google Drive sources by default. Cite source, path, URL, "
-            "content hash, page, and locator. Hybrid search uses reciprocal-rank fusion and falls "
-            "back to full text when embeddings fail. Mutation tools exist only in reviewer/admin "
-            "profiles."
-        ),
+        instructions=AGENT_INSTRUCTIONS,
     )
     read_only = ToolAnnotations(
         read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
@@ -388,8 +406,13 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         return dispatcher.call("status", {})
 
     @server.tool(annotations=read_only)
-    def sources() -> list[dict[str, Any]]:
-        """List configured local and Google Drive sources."""
+    def doctor() -> dict[str, Any]:
+        """Run actionable readiness checks without exposing credential values."""
+        return dispatcher.call("doctor", {})
+
+    @server.tool(annotations=read_only)
+    def sources() -> dict[str, Any]:
+        """List sources or return structured setup guidance when none exist."""
         return dispatcher.call("sources", {})
 
     @server.tool(annotations=read_only)

@@ -451,7 +451,8 @@ class MultiSourceTests(unittest.TestCase):
             reader = create_sdk_server(service, "reader")
             admin = create_sdk_server(service, "admin")
         self.assertEqual(
-            set(reader.registered), {"search", "read", "status", "sources", "metadata", "reviews"}
+            set(reader.registered),
+            {"search", "read", "status", "doctor", "sources", "metadata", "reviews"},
         )
         self.assertIn("correct_page", admin.registered)
         self.assertIn("remove_source", admin.registered)

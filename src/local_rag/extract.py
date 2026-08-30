@@ -9,8 +9,12 @@ from .ocr_runtime import OCRRuntimeManager
 
 
 class Extractor:
-    def __init__(self, ocr_runtime: OCRRuntimeManager):
+    def __init__(
+        self, ocr_runtime: OCRRuntimeManager, *, ocr_enabled: bool = True, ocr_offline: bool = False
+    ):
         self.ocr_runtime = ocr_runtime
+        self.ocr_enabled = ocr_enabled
+        self.ocr_offline = ocr_offline
 
     def extract(self, path: Path) -> ExtractedDocument:
         suffix = path.suffix.lower()
@@ -40,12 +44,13 @@ class Extractor:
                 pages[number] = {"text": markdown, "source": "native"}
         reviews: list[dict[str, Any]] = []
         if routed:
-            if self.ocr_runtime.configure():
+            if self.ocr_enabled and self.ocr_runtime.configure():
                 try:
                     result = pdf_inspector.process_pdf_with_ocr(
                         str(path),
                         page_numbers=routed,
-                        offline=False,
+                        model_directory=str(self.ocr_runtime.model_dir),
+                        offline=self.ocr_offline,
                     )
                     for ocr_page in result.pages:
                         number = int(ocr_page.page_number)
@@ -74,7 +79,14 @@ class Extractor:
                     )
             else:
                 reviews.extend(
-                    {"page": page, "reason": "ocr_runtime_missing", "detail": {}} for page in routed
+                    {
+                        "page": page,
+                        "reason": "ocr_runtime_missing",
+                        "detail": {
+                            "action": "run local-rag-mcp setup --full, then reindex --reextract"
+                        },
+                    }
+                    for page in routed
                 )
         complex_pages = set(classification.pages_with_tables) | set(
             classification.pages_with_columns

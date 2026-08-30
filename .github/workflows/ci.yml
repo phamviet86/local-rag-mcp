@@ -38,3 +38,16 @@ jobs:
           local-rag-mcp --help
           local-rag-mcp mcp --help
           local-rag --help
+      - name: Wheel and isolated CLI smoke
+        run: |
+          python -m pip wheel --no-deps --wheel-dir dist .
+          python -m venv /tmp/local-rag-mcp-wheel
+          /tmp/local-rag-mcp-wheel/bin/pip install dist/*.whl
+          /tmp/local-rag-mcp-wheel/bin/pip check
+          /tmp/local-rag-mcp-wheel/bin/python -c "import mcp, pdf_inspector, watchdog"
+          data_root=$(mktemp -d)
+          /tmp/local-rag-mcp-wheel/bin/local-rag-mcp --home "$data_root" setup --no-ocr
+          if /tmp/local-rag-mcp-wheel/bin/local-rag-mcp --home "$data_root" doctor --json; then
+            echo "doctor unexpectedly reported ready with zero sources"
+            exit 1
+          fi
