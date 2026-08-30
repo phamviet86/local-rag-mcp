@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import replace
@@ -24,11 +26,11 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     )
     initialize.add_argument("root", type=Path, nargs="?")
     initialize.add_argument("--exclude", action="append", default=[])
-    initialize.add_argument("--reconcile-seconds", type=float, default=60)
+    initialize.add_argument("--reconcile-seconds", type=float, default=600)
     setup = commands.add_parser("setup", help="explicitly configure full OCR or no-OCR mode")
     setup.add_argument("root", type=Path, nargs="?")
     setup.add_argument("--exclude", action="append", default=[])
-    setup.add_argument("--reconcile-seconds", type=float, default=60)
+    setup.add_argument("--reconcile-seconds", type=float, default=600)
     setup_mode = setup.add_mutually_exclusive_group(required=True)
     setup_mode.add_argument("--full", action="store_true", help="provision and verify local OCR")
     setup_mode.add_argument(
@@ -61,6 +63,11 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
         command.add_argument("target", nargs="?", help="local relative file/folder")
         command.add_argument("--source")
         command.add_argument("--full", action="store_true", help="authoritative Drive tree sync")
+        execution = command.add_mutually_exclusive_group()
+        execution.add_argument(
+            "--background", action="store_true", help="queue and return a job ID"
+        )
+        execution.add_argument("--wait", action="store_true", help="wait for completion (default)")
     reindex = commands.add_parser(
         "reindex", aliases=["rebuild"], help="rebuild file/folder/source/all index state"
     )
@@ -70,6 +77,11 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     reindex.add_argument(
         "--reextract", action="store_true", help="deliberately rerun extraction/OCR"
     )
+    reindex_execution = reindex.add_mutually_exclusive_group()
+    reindex_execution.add_argument(
+        "--background", action="store_true", help="queue and return a job ID"
+    )
+    reindex_execution.add_argument("--wait", action="store_true", help="wait for completion")
 
     search = commands.add_parser("search", help="global search with optional source/folder scope")
     search.add_argument("query")
@@ -88,6 +100,18 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     commands.add_parser(
         "serve", aliases=["watch"], help="watch local roots and periodically sync all sources"
     )
+    service_command = commands.add_parser("service", help="manage optional continuous indexing")
+    service_commands = service_command.add_subparsers(dest="service_command", required=True)
+    for name in ("install", "status", "start", "stop", "uninstall"):
+        service_commands.add_parser(name)
+    jobs = commands.add_parser("jobs", help="inspect or run durable indexing jobs")
+    job_commands = jobs.add_subparsers(dest="jobs_command", required=True)
+    job_list = job_commands.add_parser("list")
+    job_list.add_argument("--limit", type=int, default=50)
+    job_status = job_commands.add_parser("status")
+    job_status.add_argument("id")
+    job_run = job_commands.add_parser("run", help=argparse.SUPPRESS)
+    job_run.add_argument("id")
     mcp = commands.add_parser("mcp", help="serve MCP SDK over stdio")
     mcp.add_argument(
         "--profile", "--mode", choices=("reader", "reviewer", "admin"), default="reader"
@@ -178,6 +202,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "initialized": True,
                     "ocr": manifest,
                     "next_step": next_step,
+                    "service_recommendation": (
+                        "optional: run 'local-rag-mcp service install' then "
+                        "'local-rag-mcp service start'"
+                    ),
                     **setup_status,
                 }
             )
@@ -188,6 +216,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "initialized": True,
                     "warning": "OCR-routed PDF pages will enter review until full OCR is set up.",
                     "next_step": next_step,
+                    "service_recommendation": (
+                        "optional: run 'local-rag-mcp service install' then "
+                        "'local-rag-mcp service start'"
+                    ),
                     **setup_status,
                 }
             )
@@ -222,17 +254,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise SystemExit("source remove requires --yes; source files are never deleted")
             output = service.remove_source(args.source)
     elif command in {"scan", "sync", "reconcile"}:
-        output = service.reconcile(args.source, args.target, full=args.full)
+        job = service.enqueue_index_job("reconcile", args.source, args.target, full=args.full)
+        if args.background:
+            _spawn_job(home, str(job["id"]))
+            output = job
+        else:
+            output = service.run_index_job(str(job["id"]))
     elif command in {"reindex", "rebuild"}:
         if not args.all and not args.source and not args.target:
             raise SystemExit("reindex requires --all, --source, or --target")
-        output = service.reconcile(
+        job = service.enqueue_index_job(
+            "reindex",
             args.source,
             args.target,
-            force_index=True,
             reextract=args.reextract,
             full=bool(args.all),
         )
+        if args.background:
+            _spawn_job(home, str(job["id"]))
+            output = job
+        else:
+            output = service.run_index_job(str(job["id"]))
     elif command == "search":
         output = service.search(args.query, args.limit, args.source, args.folder, args.mode)
     elif command == "read":
@@ -241,6 +283,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         output = service.status()
     elif command == "doctor":
         output = service.doctor()
+    elif command == "jobs":
+        if args.jobs_command == "list":
+            output = service.list_jobs(limit=args.limit)
+        elif args.jobs_command == "status":
+            output = service.job_status(args.id, reader=False)
+        else:
+            output = service.run_index_job(args.id)
+    elif command == "service":
+        from .service_manager import AutoIndexService
+
+        manager = AutoIndexService(home)
+        output = getattr(manager, args.service_command)()
     elif command in {"serve", "watch"}:
         from .watcher import MultiSourceWatchService
 
@@ -338,6 +392,16 @@ def _evidence(value: str) -> Any:
 
 def _print(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
+
+
+def _spawn_job(home: Path, job_id: str) -> None:
+    subprocess.Popen(
+        [sys.executable, "-m", "local_rag.cli", "--home", str(home), "jobs", "run", job_id],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 if __name__ == "__main__":

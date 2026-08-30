@@ -42,6 +42,9 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(result["ok"])
         self.assertEqual(Settings.load(self.home).ocr_mode, "no-ocr")
+        self.assertEqual(Settings.load(self.home).reconcile_seconds, 600)
+        self.assertIn("service install", result["service_recommendation"])
+        self.assertEqual(parser().parse_args(["service", "status"]).service_command, "status")
 
         doctor_code, doctor = self.capture(["--home", str(self.home), "doctor", "--json"])
         self.assertEqual(doctor_code, 2)

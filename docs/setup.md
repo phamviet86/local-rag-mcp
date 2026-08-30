@@ -80,3 +80,43 @@ Register MCP using the installed stdio executable and the same data root:
 
 Restart the MCP host, then call `doctor`, `sources`, `search`, and `read`. Use `reviewer` or `admin`
 only for trusted local agents that need the additional mutation tools.
+
+## Optional continuous indexing
+
+Manual `reconcile`, `reindex`, `--reextract`, CLI, and MCP operation never depend on a background
+service. To opt in on macOS LaunchAgent or Linux systemd user services:
+
+```bash
+local-rag-mcp service install
+local-rag-mcp service start
+local-rag-mcp service status
+local-rag-mcp service stop
+local-rag-mcp service uninstall
+```
+
+Install writes a user unit, but setup never installs or starts it. The long-lived process uses
+native filesystem events for fast local updates. Every 600 seconds it reconciles all enabled
+sources, recovering missed local events and incrementally polling remote change cursors. Override
+the interval at setup with `--reconcile-seconds`.
+
+Service templates deliberately do not copy embedding API keys or OAuth tokens. Local embeddings
+work from the saved provider/model configuration. Remote embeddings require the service process to
+receive `LOCAL_RAG_MCP_OPENAI_API_KEY` and related provider variables through an operator-managed,
+owner-readable wrapper or platform credential/environment facility; interactive shell exports are
+not automatically inherited by LaunchAgent or systemd. Without those credentials, indexing still
+commits FTS and reports embeddings unavailable. Keep secret values out of unit files and logs.
+
+Indexing is serialized through durable jobs:
+
+```bash
+local-rag-mcp reconcile
+local-rag-mcp reconcile --source notes --background
+local-rag-mcp reindex --source notes --target folder
+local-rag-mcp reindex --source notes --target folder/file.pdf --reextract
+local-rag-mcp jobs list
+local-rag-mcp jobs status JOB_ID
+```
+
+Jobs record phases, heartbeat, aggregate progress, and completion/error state. Search/read use
+committed SQLite WAL state throughout indexing. Conflicting writers are rejected; identical active
+work coalesces to the same job ID.

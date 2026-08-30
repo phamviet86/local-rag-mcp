@@ -39,3 +39,16 @@ state. OCR review corrections are additive and do not replace the base artifact.
 For a typical host, register `local-rag-mcp-server` as a stdio MCP command with
 `LOCAL_RAG_MCP_HOME=~/.local-rag` and `LOCAL_RAG_MCP_PROFILE=reader`. After reconnecting, verify an
 actual initialize, tool listing, and search call; persisted registration alone is not proof.
+
+Reader agents can call `index_status` and `job_status`. Progress contains source and aggregate counts
+but never target filenames or detailed file errors. Search responses also contain index status and
+continue returning committed results while indexing runs.
+
+Admin agents may call `start_reconcile` or `start_reindex` for background work and then poll
+`job_status`. Scope may be global, source, folder, or file; `reextract=true` is always explicit.
+Identical active requests coalesce, while conflicting writes are rejected. Installing or controlling
+the OS service remains an operator CLI action and is never required for MCP retrieval.
+
+Do not assume a background service inherits interactive embedding credentials. Its generated unit
+contains no secrets. If remote embeddings are needed, the operator must arrange a protected runtime
+environment; otherwise FTS remains the honest supported service behavior.

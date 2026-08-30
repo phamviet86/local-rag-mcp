@@ -82,6 +82,10 @@ class CoalescingEventHandler(FileSystemEventHandler):
         )
 
     def flush_ready(self, force: bool = False) -> dict[str, object]:
+        ready = self.drain_ready(force)
+        return self.apply_changes(ready)
+
+    def drain_ready(self, force: bool = False) -> list[PendingChange]:
         now = time.monotonic()
         with self._lock:
             ready = [
@@ -91,10 +95,13 @@ class CoalescingEventHandler(FileSystemEventHandler):
             ]
             for key, _ in ready:
                 self._pending.pop(key, None)
+        return [change for _, change in ready]
+
+    def apply_changes(self, ready: list[PendingChange]) -> dict[str, object]:
         paths: list[Path] = []
         changed = 0
         errors: list[str] = []
-        for _, change in ready:
+        for change in ready:
             try:
                 if change.kind == "moved" and change.source is not None:
                     changed += int(self.service.indexer.move(change.source, change.path))
@@ -163,32 +170,48 @@ class MultiSourceWatchService:
     def __init__(self, service: MultiSourceRAG):
         self.service = service
         self.observer = Observer()
-        self.handlers: list[CoalescingEventHandler] = []
+        self.handlers: list[tuple[SourceRecord, CoalescingEventHandler]] = []
         self.stop_event = threading.Event()
         for source in service.registry.list(enabled=True):
             if source.kind != "local":
                 continue
             facade = _SourceFacade(service, source)
             handler = CoalescingEventHandler(facade)
-            self.handlers.append(handler)
+            self.handlers.append((source, handler))
             self.observer.schedule(handler, source.locator, recursive=True)
 
     def run(self) -> None:
-        self.service.reconcile()
+        self.service.start_index_job("reconcile", background=False)
         self.observer.start()
         last_reconcile = time.monotonic()
         try:
             while not self.stop_event.wait(0.1):
-                for handler in self.handlers:
-                    handler.flush_ready()
+                for source, handler in self.handlers:
+                    self._flush_source(source, handler)
                 if time.monotonic() - last_reconcile >= self.service.settings.reconcile_seconds:
-                    self.service.reconcile()
+                    self.service.start_index_job("reconcile", background=False)
                     last_reconcile = time.monotonic()
         finally:
-            for handler in self.handlers:
-                handler.flush_ready(force=True)
+            for source, handler in self.handlers:
+                self._flush_source(source, handler, force=True)
             self.observer.stop()
             self.observer.join()
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def _flush_source(
+        self,
+        source: SourceRecord,
+        handler: CoalescingEventHandler,
+        *,
+        force: bool = False,
+    ) -> None:
+        for change in handler.drain_ready(force):
+            targets = [change.path]
+            if change.kind == "moved" and change.source is not None:
+                targets.insert(0, change.source)
+            for target in targets:
+                self.service.start_index_job(
+                    "reconcile", source.name, str(target), background=False
+                )

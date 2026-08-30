@@ -47,6 +47,8 @@ jobs:
           /tmp/local-rag-mcp-wheel/bin/python -c "import mcp, pdf_inspector, watchdog"
           data_root=$(mktemp -d)
           /tmp/local-rag-mcp-wheel/bin/local-rag-mcp --home "$data_root" setup --no-ocr
+          /tmp/local-rag-mcp-wheel/bin/local-rag-mcp --home "$data_root" jobs list
+          /tmp/local-rag-mcp-wheel/bin/local-rag-mcp --home "$data_root" service status
           if /tmp/local-rag-mcp-wheel/bin/local-rag-mcp --home "$data_root" doctor --json; then
             echo "doctor unexpectedly reported ready with zero sources"
             exit 1

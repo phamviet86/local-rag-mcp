@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -9,12 +10,14 @@ from .config import Settings
 from .db import Database
 from .embeddings import (
     EmbeddingProvider,
+    cache_identity,
     configured_provider,
     provider_readiness,
     public_identity,
 )
 from .extract import Extractor
 from .indexer import Indexer
+from .jobs import IndexJobManager
 from .ocr_runtime import OCRRuntimeManager
 from .search import SearchEngine
 from .sources import SourceRecord, SourceRegistry, source_settings
@@ -156,6 +159,7 @@ class MultiSourceRAG:
         )
         self.search_engine = SearchEngine(settings, self.db, self.embeddings)
         self.drive_backend_factory = drive_backend_factory
+        self.jobs = IndexJobManager(self.db)
 
     def _migrate_legacy_root(self) -> None:
         sources = self.registry.list()
@@ -275,6 +279,7 @@ class MultiSourceRAG:
         force_index: bool = False,
         reextract: bool = False,
         full: bool = False,
+        progress: Callable[[dict[str, int | str]], None] | None = None,
     ) -> dict[str, Any]:
         selected = [self.registry.get(source)] if source else self.registry.list(enabled=True)
         if not selected:
@@ -289,6 +294,34 @@ class MultiSourceRAG:
                 ),
             }
         reports, errors = [], []
+        progress_by_source: dict[str, dict[str, int]] = {}
+
+        def source_progress(record: SourceRecord, update: dict[str, int | str]) -> None:
+            state = progress_by_source.setdefault(
+                record.id,
+                {
+                    "discovered": 0,
+                    "processed": 0,
+                    "searchable": 0,
+                    "remaining": 0,
+                    "embedding_pending": 0,
+                },
+            )
+            for key in state:
+                if key in update:
+                    state[key] = int(update[key])
+            if progress is not None:
+                progress(
+                    {
+                        "phase": str(update.get("phase", "indexing")),
+                        "active_source": record.name,
+                        **{
+                            key: sum(item[key] for item in progress_by_source.values())
+                            for key in state
+                        },
+                    }
+                )
+
         for record in selected:
             if not record.enabled and source is None:
                 continue
@@ -297,7 +330,12 @@ class MultiSourceRAG:
                     indexer = self.indexer_for(record)
                     local_settings = indexer.settings
                     path = local_settings.scope(target) if target else None
-                    report = indexer.reconcile(path, force_index=force_index, reextract=reextract)
+                    report = indexer.reconcile(
+                        path,
+                        force_index=force_index,
+                        reextract=reextract,
+                        progress=partial(source_progress, record),
+                    )
                     report.update({"source": record.name, "kind": record.kind})
                 else:
                     from .drive import DriveAdapter, GoogleDriveBackend
@@ -313,6 +351,7 @@ class MultiSourceRAG:
                             reextract=reextract,
                             full=full,
                             target=target,
+                            progress=partial(source_progress, record),
                         )
                     finally:
                         backend.close()
@@ -336,6 +375,7 @@ class MultiSourceRAG:
                 "effective_mode": "unavailable",
                 "results": [],
                 "warnings": ["No enabled sources are configured."],
+                "index_status": self.index_status(),
                 "error": _readiness_error(
                     "no_enabled_sources",
                     "Search requires at least one enabled source.",
@@ -343,7 +383,9 @@ class MultiSourceRAG:
                     "local-rag-mcp source add-local NAME FOLDER",
                 ),
             }
-        return self.search_engine.search(query, limit, folder, mode, source)
+        result = self.search_engine.search(query, limit, folder, mode, source)
+        result["index_status"] = self.index_status()
+        return result
 
     def read(
         self,
@@ -364,7 +406,9 @@ class MultiSourceRAG:
             "embedding_identity": public_identity(self.embeddings),
             "ocr_runtime_installed": self.ocr_runtime.configure(),
             "ocr_mode": self.settings.ocr_mode,
+            "reconcile_seconds": self.settings.reconcile_seconds,
             "source_status": self.sources(),
+            "index_status": self.index_status(),
         }
         if not result["enabled_sources"]:
             result["error"] = _readiness_error(
@@ -373,6 +417,97 @@ class MultiSourceRAG:
                 "local-rag-mcp source add-local NAME FOLDER",
             )
         return result
+
+    def index_status(self) -> dict[str, Any]:
+        return self.jobs.index_status()
+
+    def job_status(self, job_id: str, *, reader: bool = True) -> dict[str, Any]:
+        return self.jobs.status(job_id, reader=reader)
+
+    def list_jobs(self, *, reader: bool = False, limit: int = 50) -> list[dict[str, Any]]:
+        return self.jobs.list(reader=reader, limit=limit)
+
+    def enqueue_index_job(
+        self,
+        kind: str,
+        source: str | None = None,
+        target: str | None = None,
+        *,
+        reextract: bool = False,
+        full: bool = False,
+    ) -> dict[str, Any]:
+        return self.jobs.enqueue(kind, source, target, reextract=reextract, full=full)
+
+    def run_index_job(self, job_id: str, *, background: bool = False) -> dict[str, Any]:
+        def execute(job: dict[str, Any], phase: Callable[[str], None]) -> dict[str, Any]:
+            phase("reconciling")
+            current = {
+                "discovered": 0,
+                "processed": 0,
+                "searchable": 0,
+                "remaining": 0,
+                "embedding_pending": 0,
+            }
+
+            def update_progress(update: dict[str, int | str]) -> None:
+                if "phase" in update:
+                    phase(str(update["phase"]))
+                for key in current:
+                    if key in update:
+                        current[key] = int(update[key])
+                self.jobs.progress(str(job["id"]), **current)
+
+            report = self.reconcile(
+                job.get("active_source"),
+                job.get("target"),
+                force_index=job["kind"] == "reindex",
+                reextract=bool(job.get("reextract", False)),
+                full=bool(job.get("full", False)),
+                progress=update_progress,
+            )
+            source_errors = [
+                error
+                for item in report.get("sources", [])
+                if isinstance(item, dict)
+                for error in item.get("errors", [])
+            ]
+            errors = [*report.get("errors", []), *source_errors]
+            if errors:
+                raise RuntimeError("; ".join(str(error) for error in errors))
+            return report
+
+        if background:
+            return self.jobs.start_background(job_id, execute, self._embedding_pending_count)
+        return self.jobs.run(job_id, execute, self._embedding_pending_count)
+
+    def start_index_job(
+        self,
+        kind: str,
+        source: str | None = None,
+        target: str | None = None,
+        *,
+        reextract: bool = False,
+        full: bool = False,
+        background: bool = True,
+    ) -> dict[str, Any]:
+        job = self.enqueue_index_job(kind, source, target, reextract=reextract, full=full)
+        if job["state"] in {"rejected", "complete", "error", "running"}:
+            return job
+        return self.run_index_job(str(job["id"]), background=background)
+
+    def _embedding_pending_count(self) -> int:
+        if self.embeddings is None:
+            return 0
+        provider, model = cache_identity(self.embeddings)
+        with self.db.connect() as connection:
+            return int(
+                connection.execute(
+                    """SELECT count(DISTINCT c.chunk_hash) FROM chunks c
+                       LEFT JOIN vectors v ON v.chunk_hash=c.chunk_hash
+                         AND v.provider=? AND v.model=? WHERE v.chunk_hash IS NULL""",
+                    (provider, model),
+                ).fetchone()[0]
+            )
 
     def doctor(self) -> dict[str, Any]:
         checks: dict[str, dict[str, Any]] = {}

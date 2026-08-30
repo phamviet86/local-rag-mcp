@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +13,8 @@ from .db import Database
 from .embeddings import EmbeddingProvider, cache_identity
 from .extract import Extractor
 from .models import ChunkRecord, ExtractedDocument, SourceSpan
+
+ProgressCallback = Callable[[dict[str, int | str]], None]
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,7 @@ class Indexer:
         target: Path | None = None,
         force_index: bool = False,
         reextract: bool = False,
+        progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         report: dict[str, Any] = {
             "discovered": 0,
@@ -119,8 +122,11 @@ class Indexer:
         present: set[str] = set()
         prepared: list[PreparedDocument] = []
         stat_updates: list[tuple[int, FileSnapshot, dict[str, Any]]] = []
-        for snapshot in self.files(target):
-            report["discovered"] += 1
+        snapshots = list(self.files(target))
+        report["discovered"] = len(snapshots)
+        processed = searchable = 0
+        _progress(progress, "discovering", len(snapshots), processed, searchable, len(snapshots))
+        for snapshot in snapshots:
             present.add(str(snapshot.path))
             current = documents.get(str(snapshot.path))
             try:
@@ -133,8 +139,19 @@ class Indexer:
                     report["stat_refreshed"] += 1
                 else:
                     prepared.append(outcome)
+                if current is not None:
+                    searchable += 1
             except Exception as exc:
                 report["errors"].append(f"{snapshot.path}: {exc}")
+            processed += 1
+            _progress(
+                progress,
+                "extracting",
+                len(snapshots),
+                processed,
+                searchable,
+                len(snapshots) - processed,
+            )
         removed_ids = self._missing_document_ids(rows, present, target)
         try:
             with self.db.transaction() as connection:
@@ -153,7 +170,9 @@ class Indexer:
         except Exception as exc:
             report["errors"].append(f"index transaction: {exc}")
             return report
-        embedding = self.embed_pending()
+        searchable = len(snapshots) - len(report["errors"])
+        _progress(progress, "committed", len(snapshots), processed, searchable, 0)
+        embedding = self.embed_pending(progress)
         report["embedded"] = embedding["embedded"]
         report["warnings"].extend(embedding["warnings"])
         if report["indexed"] and self.embeddings is None:
@@ -429,7 +448,7 @@ class Indexer:
                 (chunk.text, title, relative, int(cursor.lastrowid)),
             )
 
-    def embed_pending(self) -> dict[str, Any]:
+    def embed_pending(self, progress: ProgressCallback | None = None) -> dict[str, Any]:
         result: dict[str, Any] = {"embedded": 0, "warnings": []}
         if self.embeddings is None:
             return result
@@ -442,6 +461,8 @@ class Indexer:
                    WHERE v.chunk_hash IS NULL GROUP BY c.chunk_hash ORDER BY c.chunk_hash""",
                 (provider, model),
             ).fetchall()
+        if progress is not None:
+            progress({"phase": "embedding", "embedding_pending": len(rows)})
         for start in range(0, len(rows), self.embedding_batch_size):
             batch = rows[start : start + self.embedding_batch_size]
             try:
@@ -458,6 +479,13 @@ class Indexer:
                         ],
                     )
                 result["embedded"] += len(batch)
+                if progress is not None:
+                    progress(
+                        {
+                            "phase": "embedding",
+                            "embedding_pending": max(0, len(rows) - result["embedded"]),
+                        }
+                    )
             except Exception as exc:
                 result["warnings"].append(f"embeddings unavailable; FTS remains usable: {exc}")
                 break
@@ -641,6 +669,26 @@ class Indexer:
             if in_scope and str(path) not in present:
                 result.append(int(row["id"]))
         return result
+
+
+def _progress(
+    callback: ProgressCallback | None,
+    phase: str,
+    discovered: int,
+    processed: int,
+    searchable: int,
+    remaining: int,
+) -> None:
+    if callback is not None:
+        callback(
+            {
+                "phase": phase,
+                "discovered": discovered,
+                "processed": processed,
+                "searchable": searchable,
+                "remaining": remaining,
+            }
+        )
 
 
 def _delete_chunks(connection: Any, document_id: int) -> None:

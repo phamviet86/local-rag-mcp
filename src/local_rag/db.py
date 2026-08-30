@@ -107,6 +107,25 @@ MIGRATIONS = [
       PRIMARY KEY(source_id,key)
     );
     """,
+    """
+    CREATE TABLE index_jobs (
+      id TEXT PRIMARY KEY, kind TEXT NOT NULL,
+      source TEXT, target TEXT, reextract INTEGER NOT NULL DEFAULT 0,
+      full INTEGER NOT NULL DEFAULT 0,
+      state TEXT NOT NULL CHECK(state IN ('queued','running','complete','error','rejected')),
+      phase TEXT NOT NULL DEFAULT 'queued', discovered INTEGER NOT NULL DEFAULT 0,
+      processed INTEGER NOT NULL DEFAULT 0, searchable INTEGER NOT NULL DEFAULT 0,
+      remaining INTEGER NOT NULL DEFAULT 0, embedding_pending INTEGER NOT NULL DEFAULT 0,
+      heartbeat_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      started_at TEXT, completed_at TEXT, error TEXT
+    );
+    CREATE INDEX index_jobs_state_created_idx ON index_jobs(state,created_at);
+    CREATE TABLE index_writer_lease (
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1), job_id TEXT,
+      heartbeat_at TEXT, FOREIGN KEY(job_id) REFERENCES index_jobs(id)
+    );
+    INSERT INTO index_writer_lease(singleton) VALUES(1);
+    """,
 ]
 
 

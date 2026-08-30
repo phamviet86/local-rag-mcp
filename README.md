@@ -22,6 +22,16 @@ local-rag-mcp reconcile
 local-rag-mcp doctor --json
 ```
 
+Setup recommends—but never requires—the optional auto-index service. Manual CLI and MCP indexing
+remain fully supported without it. The service keeps native local filesystem watchers active and
+performs incremental reconciliation of all local and remote sources every 600 seconds as recovery.
+
+```bash
+local-rag-mcp service install
+local-rag-mcp service start
+local-rag-mcp service status
+```
+
 `setup --no-ocr` remains fully usable for native extraction and FTS; OCR-routed pages are queued for
 review. Missing embeddings similarly leaves FTS available. See [`docs/setup.md`](docs/setup.md) for
 operator setup and [`docs/agents.md`](docs/agents.md) for agent behavior.
@@ -107,6 +117,7 @@ entire change page is safely retried.
 
 ```bash
 local-rag-mcp reconcile                         # every enabled source
+local-rag-mcp reconcile --source engineering --background
 local-rag-mcp sync --source work-drive
 local-rag-mcp sync --source work-drive --full
 local-rag-mcp reconcile reports --source engineering
@@ -117,7 +128,14 @@ local-rag-mcp reindex --source engineering --target reports/2026
 local-rag-mcp reindex --source work-drive --target team/handbook
 local-rag-mcp reindex --all
 local-rag-mcp reindex --source work-drive --reextract
+local-rag-mcp jobs list
+local-rag-mcp jobs status JOB_ID
 ```
+
+Indexing commands use a durable single-writer queue. Their JSON includes a job ID, phase,
+heartbeat, discovered/processed/searchable/remaining counts, and embedding-pending count. A second
+identical job coalesces; a conflicting job is rejected. SQLite WAL readers and MCP search/read stay
+available from the last committed index while a job runs.
 
 Normal local reconciliation uses size/mtime as its unchanged fast path and hashes candidates.
 Targets are relative file or folder paths within either kind of source; partial Drive rebuilds do
@@ -226,10 +244,12 @@ LOCAL_RAG_MCP_PROFILE=reviewer local-rag-mcp-server
 LOCAL_RAG_MCP_PROFILE=admin local-rag-mcp-server
 ```
 
-- `reader`: `search`, `read`, `status`, `doctor`, `sources`, `metadata`, `reviews`.
+- `reader`: `search`, `read`, `status`, `doctor`, `index_status`, `job_status`, `sources`,
+  `metadata`, `reviews`.
 - `reviewer`: reader tools plus page correction/review resolution and evidence-backed metadata and
   relationships.
-- `admin`: reviewer tools plus reconcile/reindex, enable/disable, and confirmed source removal.
+- `admin`: reviewer tools plus queued reconcile/reindex starts, synchronous reconcile/reindex,
+  enable/disable, and confirmed source removal.
 
 SDK tool annotations mark read-only, mutating, and destructive operations. Profiles are capability
 exposure boundaries, not authentication. Source removal requires explicit confirmation and still

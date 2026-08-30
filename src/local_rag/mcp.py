@@ -73,6 +73,16 @@ READER_TOOLS = [
         "inputSchema": _schema({}),
     },
     {
+        "name": "index_status",
+        "description": "Read filename-safe progress for the active indexing job.",
+        "inputSchema": _schema({}),
+    },
+    {
+        "name": "job_status",
+        "description": "Read filename-safe progress for one durable indexing job.",
+        "inputSchema": _schema({"job_id": {"type": "string"}}, ["job_id"]),
+    },
+    {
         "name": "sources",
         "description": "List sources or return structured setup guidance when none exist.",
         "inputSchema": _schema({}),
@@ -148,6 +158,29 @@ REVIEWER_TOOLS = [
 
 ADMIN_TOOLS = [
     {
+        "name": "start_reconcile",
+        "description": "Queue an incremental reconcile and return its durable job ID.",
+        "inputSchema": _schema(
+            {
+                "source": {"type": "string"},
+                "target": {"type": "string"},
+                "full": {"type": "boolean"},
+            }
+        ),
+    },
+    {
+        "name": "start_reindex",
+        "description": "Queue a reindex/reextract and return its durable job ID.",
+        "inputSchema": _schema(
+            {
+                "source": {"type": "string"},
+                "target": {"type": "string"},
+                "reextract": {"type": "boolean", "default": False},
+                "all": {"type": "boolean", "default": False},
+            }
+        ),
+    },
+    {
         "name": "reconcile",
         "description": "Incrementally reconcile one source or every enabled source.",
         "inputSchema": _schema(
@@ -202,7 +235,11 @@ class MCPServer:
         if mode == "admin":
             self.tools.extend(ADMIN_TOOLS)
         if not isinstance(service, MultiSourceRAG):
-            self.tools = [tool for tool in self.tools if tool["name"] not in {"sources", "doctor"}]
+            self.tools = [
+                tool
+                for tool in self.tools
+                if tool["name"] not in {"sources", "doctor", "index_status", "job_status"}
+            ]
         self.allowed = {tool["name"] for tool in self.tools}
 
     def call(self, name: str, values: dict[str, Any]) -> Any:
@@ -239,6 +276,10 @@ class MCPServer:
             return self.service.status()
         if name == "doctor":
             return self.service.doctor()
+        if name == "index_status":
+            return self.service.index_status()
+        if name == "job_status":
+            return self.service.job_status(values["job_id"], reader=True)
         if name == "sources":
             return self.service.source_summary()
         if name == "metadata":
@@ -285,20 +326,42 @@ class MCPServer:
             )
         if name == "reconcile":
             return (
-                self.service.reconcile(
-                    values.get("source"), values.get("target"), full=bool(values.get("full", False))
+                self.service.start_index_job(
+                    "reconcile",
+                    values.get("source"),
+                    values.get("target"),
+                    full=bool(values.get("full", False)),
+                    background=False,
                 )
                 if multi
                 else self.service.scan(values.get("target"))
             )
+        if name == "start_reconcile":
+            return self.service.start_index_job(
+                "reconcile",
+                values.get("source"),
+                values.get("target"),
+                full=bool(values.get("full", False)),
+                background=True,
+            )
+        if name == "start_reindex":
+            return self.service.start_index_job(
+                "reindex",
+                values.get("source"),
+                values.get("target"),
+                reextract=bool(values.get("reextract", False)),
+                full=bool(values.get("all", False)),
+                background=True,
+            )
         if name == "reindex":
             return (
-                self.service.reconcile(
+                self.service.start_index_job(
+                    "reindex",
                     values.get("source"),
                     values.get("target"),
-                    force_index=True,
                     reextract=bool(values.get("reextract", False)),
                     full=bool(values.get("all", False)),
+                    background=False,
                 )
                 if multi
                 else self.service.scan(
@@ -411,6 +474,16 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         return dispatcher.call("doctor", {})
 
     @server.tool(annotations=read_only)
+    def index_status() -> dict[str, Any]:
+        """Read filename-safe progress for the active indexing job."""
+        return dispatcher.call("index_status", {})
+
+    @server.tool(annotations=read_only)
+    def job_status(job_id: str) -> dict[str, Any]:
+        """Read filename-safe progress for one durable indexing job."""
+        return dispatcher.call("job_status", {"job_id": job_id})
+
+    @server.tool(annotations=read_only)
     def sources() -> dict[str, Any]:
         """List sources or return structured setup guidance when none exist."""
         return dispatcher.call("sources", {})
@@ -494,6 +567,35 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             )
 
     if profile == "admin":
+
+        @server.tool(annotations=mutate)
+        def start_reconcile(
+            source: str | None = None,
+            target: str | None = None,
+            full: bool = False,
+        ) -> dict[str, Any]:
+            """Queue an incremental reconcile and return a durable job ID."""
+            return dispatcher.call(
+                "start_reconcile", {"source": source, "target": target, "full": full}
+            )
+
+        @server.tool(annotations=mutate)
+        def start_reindex(
+            source: str | None = None,
+            target: str | None = None,
+            reextract: bool = False,
+            all: bool = False,
+        ) -> dict[str, Any]:
+            """Queue a reindex/reextract and return a durable job ID."""
+            return dispatcher.call(
+                "start_reindex",
+                {
+                    "source": source,
+                    "target": target,
+                    "reextract": reextract,
+                    "all": all,
+                },
+            )
 
         @server.tool(annotations=mutate)
         def reconcile(

@@ -13,5 +13,9 @@ ask for or echo OAuth tokens, API keys, or client-secret contents. Missing OCR a
 supported degraded modes: OCR-routed PDF pages enter review, while FTS remains available without
 vectors. Source removal purges only derived local state and must never touch authoritative files.
 
+Index mutations use the durable job queue. Reader progress may expose source names and aggregate
+counts but must not expose target filenames or detailed file errors. The optional OS user service is
+operator-managed and must never be installed implicitly by setup or an agent.
+
 Run `ruff format --check .`, `ruff check .`, `mypy`, `pytest`, and `python -m compileall -q src tests`
 before committing. Never commit secrets, publish, or push without explicit authority.

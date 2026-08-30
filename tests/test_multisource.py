@@ -452,10 +452,22 @@ class MultiSourceTests(unittest.TestCase):
             admin = create_sdk_server(service, "admin")
         self.assertEqual(
             set(reader.registered),
-            {"search", "read", "status", "doctor", "sources", "metadata", "reviews"},
+            {
+                "search",
+                "read",
+                "status",
+                "doctor",
+                "index_status",
+                "job_status",
+                "sources",
+                "metadata",
+                "reviews",
+            },
         )
         self.assertIn("correct_page", admin.registered)
         self.assertIn("remove_source", admin.registered)
+        self.assertIn("start_reconcile", admin.registered)
+        self.assertIn("start_reindex", admin.registered)
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ class Settings:
     exclusions: frozenset[str] = DEFAULT_EXCLUSIONS
     chunk_chars: int = 1200
     chunk_overlap: int = 150
-    reconcile_seconds: float = 60.0
+    reconcile_seconds: float = 600.0
     embedding_provider: str = "none"
     embedding_model: str | None = None
     openai_base_url: str = "https://openrouter.ai/api/v1"
@@ -120,7 +120,7 @@ class Settings:
             exclusions=frozenset(payload.get("exclusions", DEFAULT_EXCLUSIONS)),
             chunk_chars=int(payload.get("chunk_chars", 1200)),
             chunk_overlap=int(payload.get("chunk_overlap", 150)),
-            reconcile_seconds=float(payload.get("reconcile_seconds", 60)),
+            reconcile_seconds=float(payload.get("reconcile_seconds", 600)),
             embedding_provider=os.environ.get("LOCAL_RAG_MCP_EMBEDDING_PROVIDER")
             or os.environ.get(
                 "LOCAL_RAG_EMBEDDING_PROVIDER", payload.get("embedding_provider", "none")

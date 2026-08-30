@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from .indexer import FileSnapshot
+from .indexer import FileSnapshot, ProgressCallback
 from .sources import SourceRecord
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -249,6 +249,7 @@ class DriveAdapter:
         reextract: bool = False,
         full: bool = False,
         target: str | None = None,
+        progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         known = {
             row["external_id"]: row for row in self.service.db.document_snapshot(self.source.id)
@@ -303,11 +304,34 @@ class DriveAdapter:
             "warnings": [],
             "errors": [],
         }
+        discovered = len(items) + len(deleted)
+        processed = searchable = 0
+        if progress is not None:
+            progress(
+                {
+                    "phase": "discovering",
+                    "discovered": discovered,
+                    "processed": 0,
+                    "searchable": 0,
+                    "remaining": discovered,
+                }
+            )
         for external_id in deleted:
             row = known.get(external_id)
             if row is not None:
                 self._delete_document(int(row["id"]))
                 report["removed"] += 1
+            processed += 1
+            if progress is not None:
+                progress(
+                    {
+                        "phase": "indexing",
+                        "discovered": discovered,
+                        "processed": processed,
+                        "searchable": searchable,
+                        "remaining": discovered - processed,
+                    }
+                )
         for item in items:
             current = known.get(item.id)
             try:
@@ -325,12 +349,24 @@ class DriveAdapter:
                         report["indexed"] += 1
                     else:
                         report["unchanged"] += 1
-                    continue
-                self._index(item, current, redownload=True)
-                report["indexed"] += 1
+                else:
+                    self._index(item, current, redownload=True)
+                    report["indexed"] += 1
+                searchable += 1
             except Exception as exc:
                 report["errors"].append(f"{item.relative_path}: {exc}")
-        embedded = self.indexer.embed_pending()
+            processed += 1
+            if progress is not None:
+                progress(
+                    {
+                        "phase": "indexing",
+                        "discovered": discovered,
+                        "processed": processed,
+                        "searchable": searchable,
+                        "remaining": discovered - processed,
+                    }
+                )
+        embedded = self.indexer.embed_pending(progress)
         report["embedded"] = embedded["embedded"]
         report["warnings"].extend(embedded["warnings"])
         if not target:
