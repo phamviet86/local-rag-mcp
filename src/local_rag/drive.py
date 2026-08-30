@@ -5,10 +5,10 @@ import io
 import json
 import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from .indexer import FileSnapshot, ProgressCallback
 from .sources import SourceRecord
@@ -92,7 +92,10 @@ class GoogleDriveBackend:
             raise ValueError(f"OAuth token file does not exist: {token}")
         if os.name != "nt" and token.stat().st_mode & 0o077:
             raise ValueError(f"OAuth token permissions must be 0600: {token}")
-        credentials = Credentials.from_authorized_user_file(str(token), self.SCOPES)
+        load_credentials = cast(
+            Callable[[str, Sequence[str]], Any], Credentials.from_authorized_user_file
+        )
+        credentials = load_credentials(str(token), self.SCOPES)
         if not credentials.valid and credentials.refresh_token:
             try:
                 credentials.refresh(Request())

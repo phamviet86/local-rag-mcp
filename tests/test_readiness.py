@@ -16,6 +16,7 @@ from local_rag.embeddings import UnavailableEmbeddings
 from local_rag.mcp import MCPServer
 from local_rag.ocr_runtime import OCR_MODEL_FILES, OCRRuntimeManager
 from local_rag.service import MultiSourceRAG
+from local_rag.service_manager import AutoIndexService
 
 
 class ReadinessTests(unittest.TestCase):
@@ -60,6 +61,38 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(result["ocr"], manifest)
         self.assertEqual(Settings.load(self.home).ocr_mode, "full")
+
+    def test_macos_service_start_surfaces_bootstrap_failure(self) -> None:
+        manager = AutoIndexService(
+            self.home, user_home=self.home, system="darwin", executable="/bin/true"
+        )
+        manager.install()
+        inactive = types.SimpleNamespace(returncode=113, stdout="", stderr="not loaded")
+        failed = types.SimpleNamespace(
+            returncode=5,
+            stdout="",
+            stderr=f"Bootstrap failed for {self.home}: 5: Input/output error",
+        )
+        with (
+            patch("local_rag.service_manager.subprocess.run", side_effect=[inactive, failed]),
+            self.assertRaisesRegex(RuntimeError, r"bootstrap failed \(exit 5\)") as raised,
+        ):
+            manager.start()
+        message = str(raised.exception)
+        self.assertIn("plutil -lint", message)
+        self.assertIn("launchd unified log", message)
+        self.assertNotIn(str(self.home), message)
+
+    def test_macos_service_start_skips_bootstrap_only_when_already_active(self) -> None:
+        manager = AutoIndexService(
+            self.home, user_home=self.home, system="darwin", executable="/bin/true"
+        )
+        manager.install()
+        active = types.SimpleNamespace(returncode=0, stdout="active", stderr="")
+        with patch("local_rag.service_manager.subprocess.run", return_value=active) as run:
+            result = manager.start()
+        self.assertTrue(result["active"])
+        run.assert_called_once()
 
     def test_ocr_provision_warms_then_verifies_offline_cache(self) -> None:
         manager = OCRRuntimeManager(self.home / "runtime", self.home / "models")

@@ -446,9 +446,11 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         limit: int = 8,
     ) -> dict[str, Any]:
         """Search globally or filter by source and relative folder."""
-        return dispatcher.call(
-            "search",
-            {"query": query, "source": source, "folder": folder, "mode": mode, "limit": limit},
+        return _dict_result(
+            dispatcher.call(
+                "search",
+                {"query": query, "source": source, "folder": folder, "mode": mode, "limit": limit},
+            )
         )
 
     @server.tool(annotations=read_only)
@@ -459,44 +461,46 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         length: int = 12000,
     ) -> dict[str, Any]:
         """Read cached text with source identity, authority, revision/hash, and provenance."""
-        return dispatcher.call(
-            "read", {"path": path, "source": source, "start": start, "length": length}
+        return _dict_result(
+            dispatcher.call(
+                "read", {"path": path, "source": source, "start": start, "length": length}
+            )
         )
 
     @server.tool(annotations=read_only)
     def status() -> dict[str, Any]:
         """Inspect source, index, embedding, OCR, and sync status."""
-        return dispatcher.call("status", {})
+        return _dict_result(dispatcher.call("status", {}))
 
     @server.tool(annotations=read_only)
     def doctor() -> dict[str, Any]:
         """Run actionable readiness checks without exposing credential values."""
-        return dispatcher.call("doctor", {})
+        return _dict_result(dispatcher.call("doctor", {}))
 
     @server.tool(annotations=read_only)
     def index_status() -> dict[str, Any]:
         """Read filename-safe progress for the active indexing job."""
-        return dispatcher.call("index_status", {})
+        return _dict_result(dispatcher.call("index_status", {}))
 
     @server.tool(annotations=read_only)
     def job_status(job_id: str) -> dict[str, Any]:
         """Read filename-safe progress for one durable indexing job."""
-        return dispatcher.call("job_status", {"job_id": job_id})
+        return _dict_result(dispatcher.call("job_status", {"job_id": job_id}))
 
     @server.tool(annotations=read_only)
     def sources() -> dict[str, Any]:
         """List sources or return structured setup guidance when none exist."""
-        return dispatcher.call("sources", {})
+        return _dict_result(dispatcher.call("sources", {}))
 
     @server.tool(annotations=read_only)
     def metadata(path: str, source: str | None = None) -> dict[str, Any]:
         """Read automatic and evidence-backed metadata and relationships."""
-        return dispatcher.call("metadata", {"path": path, "source": source})
+        return _dict_result(dispatcher.call("metadata", {"path": path, "source": source}))
 
     @server.tool(annotations=read_only)
     def reviews(status: str = "open") -> list[dict[str, Any]]:
         """List durable OCR review items."""
-        return dispatcher.call("reviews", {"status": status})
+        return _list_result(dispatcher.call("reviews", {"status": status}))
 
     if profile in {"reviewer", "admin"}:
 
@@ -508,16 +512,20 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             actor: str,
         ) -> dict[str, Any]:
             """Correct one reviewed PDF page without replacing the base artifact."""
-            return dispatcher.call(
-                "correct_page",
-                {"review_id": review_id, "text": text, "evidence": evidence, "actor": actor},
+            return _dict_result(
+                dispatcher.call(
+                    "correct_page",
+                    {"review_id": review_id, "text": text, "evidence": evidence, "actor": actor},
+                )
             )
 
         @server.tool(annotations=mutate)
         def resolve_review(review_id: int, resolution: str) -> dict[str, Any]:
             """Resolve an OCR review item without changing its page text."""
-            return dispatcher.call(
-                "resolve_review", {"review_id": review_id, "resolution": resolution}
+            return _dict_result(
+                dispatcher.call(
+                    "resolve_review", {"review_id": review_id, "resolution": resolution}
+                )
             )
 
         @server.tool(annotations=mutate)
@@ -530,16 +538,18 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             source: str | None = None,
         ) -> dict[str, Any]:
             """Add evidence-backed metadata to an indexed document."""
-            return dispatcher.call(
-                "add_metadata",
-                {
-                    "path": path,
-                    "source": source,
-                    "key": key,
-                    "value": value,
-                    "evidence": evidence,
-                    "actor": actor,
-                },
+            return _dict_result(
+                dispatcher.call(
+                    "add_metadata",
+                    {
+                        "path": path,
+                        "source": source,
+                        "key": key,
+                        "value": value,
+                        "evidence": evidence,
+                        "actor": actor,
+                    },
+                )
             )
 
         @server.tool(annotations=mutate)
@@ -553,17 +563,19 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             target_source: str | None = None,
         ) -> dict[str, Any]:
             """Add an evidence-backed relationship between indexed documents."""
-            return dispatcher.call(
-                "add_relationship",
-                {
-                    "source_path": source_path,
-                    "target_path": target_path,
-                    "relation": relation,
-                    "evidence": evidence,
-                    "actor": actor,
-                    "source_source": source_source,
-                    "target_source": target_source,
-                },
+            return _dict_result(
+                dispatcher.call(
+                    "add_relationship",
+                    {
+                        "source_path": source_path,
+                        "target_path": target_path,
+                        "relation": relation,
+                        "evidence": evidence,
+                        "actor": actor,
+                        "source_source": source_source,
+                        "target_source": target_source,
+                    },
+                )
             )
 
     if profile == "admin":
@@ -575,8 +587,10 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             full: bool = False,
         ) -> dict[str, Any]:
             """Queue an incremental reconcile and return a durable job ID."""
-            return dispatcher.call(
-                "start_reconcile", {"source": source, "target": target, "full": full}
+            return _dict_result(
+                dispatcher.call(
+                    "start_reconcile", {"source": source, "target": target, "full": full}
+                )
             )
 
         @server.tool(annotations=mutate)
@@ -587,14 +601,16 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             all: bool = False,
         ) -> dict[str, Any]:
             """Queue a reindex/reextract and return a durable job ID."""
-            return dispatcher.call(
-                "start_reindex",
-                {
-                    "source": source,
-                    "target": target,
-                    "reextract": reextract,
-                    "all": all,
-                },
+            return _dict_result(
+                dispatcher.call(
+                    "start_reindex",
+                    {
+                        "source": source,
+                        "target": target,
+                        "reextract": reextract,
+                        "all": all,
+                    },
+                )
             )
 
         @server.tool(annotations=mutate)
@@ -604,7 +620,9 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             full: bool = False,
         ) -> dict[str, Any]:
             """Incrementally reconcile one source or every enabled source."""
-            return dispatcher.call("reconcile", {"source": source, "target": target, "full": full})
+            return _dict_result(
+                dispatcher.call("reconcile", {"source": source, "target": target, "full": full})
+            )
 
         @server.tool(annotations=mutate)
         def reindex(
@@ -614,22 +632,40 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             all: bool = False,
         ) -> dict[str, Any]:
             """Rebuild cached index state, optionally rerunning extraction/OCR."""
-            return dispatcher.call(
-                "reindex",
-                {"source": source, "target": target, "reextract": reextract, "all": all},
+            return _dict_result(
+                dispatcher.call(
+                    "reindex",
+                    {"source": source, "target": target, "reextract": reextract, "all": all},
+                )
             )
 
         @server.tool(annotations=mutate)
         def set_source_enabled(source: str, enabled: bool) -> dict[str, Any]:
             """Enable or disable a source without deleting indexed data."""
-            return dispatcher.call("set_source_enabled", {"source": source, "enabled": enabled})
+            return _dict_result(
+                dispatcher.call("set_source_enabled", {"source": source, "enabled": enabled})
+            )
 
         @server.tool(annotations=destructive)
         def remove_source(source: str, confirm: bool = False) -> dict[str, Any]:
             """Purge only a source's local index/cache; never source files."""
-            return dispatcher.call("remove_source", {"source": source, "confirm": confirm})
+            return _dict_result(
+                dispatcher.call("remove_source", {"source": source, "confirm": confirm})
+            )
 
     return server
+
+
+def _dict_result(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError("MCP tool returned a non-object result")
+    return value
+
+
+def _list_result(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise TypeError("MCP tool returned a non-object-list result")
+    return value
 
 
 def run_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> int:

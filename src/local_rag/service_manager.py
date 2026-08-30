@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import plistlib
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -87,6 +88,9 @@ class AutoIndexService:
     def start(self) -> dict[str, Any]:
         if not self.unit_path.is_file():
             raise RuntimeError("service is not installed; run 'local-rag-mcp service install'")
+        current = self.status()
+        if current["active"]:
+            return current
         if self.system == "darwin":
             self._run(
                 [
@@ -94,24 +98,27 @@ class AutoIndexService:
                     "bootstrap",
                     f"gui/{os.getuid()}",
                     str(self.unit_path),
-                ],
-                allow_already=True,
+                ]
             )
         else:
             self._run(["systemctl", "--user", "enable", "--now", "local-rag-mcp.service"])
-        return self.status()
+        result = self.status()
+        if not result["active"]:
+            raise RuntimeError(
+                "service command completed but the service is inactive; inspect the local "
+                "service status and logs"
+            )
+        return result
 
     def stop(self) -> dict[str, Any]:
+        if not self.status()["active"]:
+            result = self.status()
+            result["active"] = False
+            return result
         if self.system == "darwin":
-            self._run(
-                ["launchctl", "bootout", f"gui/{os.getuid()}/{self.LABEL}"],
-                allow_already=True,
-            )
+            self._run(["launchctl", "bootout", f"gui/{os.getuid()}/{self.LABEL}"])
         else:
-            self._run(
-                ["systemctl", "--user", "disable", "--now", "local-rag-mcp.service"],
-                allow_already=True,
-            )
+            self._run(["systemctl", "--user", "disable", "--now", "local-rag-mcp.service"])
         result = self.status()
         result["active"] = False
         return result
@@ -121,15 +128,30 @@ class AutoIndexService:
             self.stop()
             self.unit_path.unlink()
         if self.system == "linux":
-            self._run(["systemctl", "--user", "daemon-reload"], allow_already=True)
+            self._run(["systemctl", "--user", "daemon-reload"])
         return {"installed": False, "active": False, "unit": str(self.unit_path)}
 
-    @staticmethod
-    def _run(command: list[str], *, allow_already: bool = False) -> None:
+    def _run(self, command: list[str]) -> None:
         result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.returncode and not allow_already:
-            message = result.stderr.strip() or result.stdout.strip() or "service command failed"
-            raise RuntimeError(message)
+        if result.returncode:
+            message = self._sanitized_output(result.stderr or result.stdout)
+            action = " ".join(command[:2])
+            hint = ""
+            if self.system == "darwin" and command[1:2] == ["bootstrap"]:
+                hint = (
+                    " Validate the plist with plutil -lint and inspect the launchd unified log; "
+                    "the service was not started."
+                )
+            raise RuntimeError(
+                f"{action} failed (exit {result.returncode}): {message}.{hint}".strip()
+            )
+
+    def _sanitized_output(self, value: str) -> str:
+        message = " ".join(value.split()) or "service command failed"
+        message = message.replace(str(self.data_home), "$LOCAL_RAG_HOME")
+        message = message.replace(str(self.user_home), "~")
+        message = re.sub(r"(?<!\w)/(?:[^\s:]+/)*[^\s:]+", "<path>", message)
+        return message[:240]
 
 
 def _systemd_quote(value: str) -> str:

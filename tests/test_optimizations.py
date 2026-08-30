@@ -1,6 +1,8 @@
 import os
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -140,6 +142,31 @@ class OptimizationTests(unittest.TestCase):
         self.assertIn("metadata_fts", tables)
         self.assertIn("review_revisions", tables)
         self.assertNotIn("jobs", tables)
+
+    def test_concurrent_first_startup_applies_each_migration_once(self):
+        path = Path(self.temp.name) / "concurrent-migration.sqlite3"
+        workers = 8
+        barrier = threading.Barrier(workers)
+
+        def migrate() -> None:
+            barrier.wait()
+            Database(path).migrate()
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            list(executor.map(lambda _index: migrate(), range(workers)))
+
+        with Database(path).connect() as connection:
+            versions = [
+                int(row[0])
+                for row in connection.execute(
+                    "SELECT version FROM schema_migrations ORDER BY version"
+                )
+            ]
+            jobs = connection.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='index_jobs'"
+            ).fetchone()[0]
+        self.assertEqual(versions, list(range(1, len(MIGRATIONS) + 1)))
+        self.assertEqual(jobs, 1)
 
     def test_1000_files_use_bounded_batched_unique_embeddings(self):
         for index in range(1000):

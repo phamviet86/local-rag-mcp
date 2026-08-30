@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-rag-mcp"
-version = "0.6.0"
+version = "0.6.1"
 description = "Local-first multi-source document indexing and MCP retrieval"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,7 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 local-embeddings = ["sentence-transformers>=3,<7"]
-dev = ["mypy>=1.11,<2", "pytest>=8,<10", "pytest-cov>=5,<8", "ruff>=0.5"]
+dev = ["mypy==1.20.2", "pytest>=8,<10", "pytest-cov>=5,<8", "ruff>=0.5"]
 
 [project.scripts]
 local-rag-mcp = "local_rag.cli:entrypoint"
@@ -40,9 +40,8 @@ target-version = "py311"
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.mypy]
-python_version = "3.11"
-check_untyped_defs = true
-disallow_untyped_defs = true
+python_version = "3.12"
+strict = true
 ignore_missing_imports = true
 warn_unused_ignores = true
 packages = ["local_rag", "local_rag_mcp"]

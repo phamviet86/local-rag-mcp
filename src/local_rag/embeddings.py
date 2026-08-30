@@ -6,7 +6,7 @@ import math
 import threading
 from collections.abc import Sequence
 from importlib.util import find_spec
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -47,7 +47,10 @@ class LocalEmbeddings:
                 model = self._model
         if model is None:
             raise RuntimeError("local embedding model failed to initialize")
-        return model.encode(list(texts), normalize_embeddings=True).tolist()
+        return cast(
+            Sequence[Sequence[float]],
+            model.encode(list(texts), normalize_embeddings=True).tolist(),
+        )
 
 
 class OpenAIEmbeddings:
@@ -161,7 +164,7 @@ def cache_identity(provider: EmbeddingProvider) -> tuple[str, str]:
     return name, f"{model}#{fingerprint}"
 
 
-def public_identity(provider: EmbeddingProvider | None) -> dict | None:
+def public_identity(provider: EmbeddingProvider | None) -> dict[str, Any] | None:
     if provider is None:
         return None
     name, model = provider.identity
@@ -175,6 +178,6 @@ def public_identity(provider: EmbeddingProvider | None) -> dict | None:
     }
 
 
-def _normalize(vector: Sequence[float]) -> list:
+def _normalize(vector: Sequence[float]) -> list[float]:
     norm = math.sqrt(sum(float(value) * float(value) for value in vector)) or 1.0
     return [float(value) / norm for value in vector]

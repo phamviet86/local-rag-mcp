@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 MIGRATIONS = [
     """
@@ -140,11 +140,22 @@ class Database:
             self.path.chmod(0o600)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA journal_mode=WAL")
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError as exc:
+            # Another first-start process may be switching the new database to WAL. Its
+            # migration transaction below still serializes this connection safely.
+            if "locked" not in str(exc).lower():
+                connection.close()
+                raise
         return connection
 
     def migrate(self) -> None:
-        with self.connect() as connection:
+        connection = self.connect()
+        try:
+            # Serialize discovery and application. A concurrent first startup must not observe
+            # the old schema and then race another process through the same DDL migration.
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS schema_migrations
                    (version INTEGER PRIMARY KEY, applied_at TEXT DEFAULT CURRENT_TIMESTAMP)"""
@@ -154,10 +165,16 @@ class Database:
             }
             for version, script in enumerate(MIGRATIONS, 1):
                 if version not in applied:
-                    connection.executescript(script)
+                    _execute_script(connection, script)
                     connection.execute(
                         "INSERT INTO schema_migrations(version) VALUES (?)", (version,)
                     )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -175,13 +192,19 @@ class Database:
     def document(self, path: Path, source_id: str | None = None) -> sqlite3.Row | None:
         with self.connect() as connection:
             if source_id is None:
-                return connection.execute(
-                    "SELECT * FROM documents WHERE path=?", (str(path),)
-                ).fetchone()
-            return connection.execute(
-                "SELECT * FROM documents WHERE source_id=? AND path=?",
-                (source_id, str(path)),
-            ).fetchone()
+                return cast(
+                    sqlite3.Row | None,
+                    connection.execute(
+                        "SELECT * FROM documents WHERE path=?", (str(path),)
+                    ).fetchone(),
+                )
+            return cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT * FROM documents WHERE source_id=? AND path=?",
+                    (source_id, str(path)),
+                ).fetchone(),
+            )
 
     def resolve_document(self, path: str, source: str | None = None) -> sqlite3.Row:
         if source is None and ":" in path:
@@ -209,7 +232,7 @@ class Database:
             raise ValueError(f"indexed document not found: {path}")
         if len(rows) > 1:
             raise ValueError(f"document reference is ambiguous; provide source: {path}")
-        return rows[0]
+        return cast(sqlite3.Row, rows[0])
 
     def document_snapshot(self, source_id: str | None = None) -> list[sqlite3.Row]:
         with self.connect() as connection:
@@ -444,7 +467,7 @@ class Database:
             ).fetchone()
         if row is None:
             raise ValueError(f"review not found: {review_id}")
-        return row
+        return cast(sqlite3.Row, row)
 
     def _refresh_metadata_index(self, connection: sqlite3.Connection, document_id: int) -> None:
         connection.execute("DELETE FROM metadata_fts WHERE document_id=?", (document_id,))
@@ -510,3 +533,16 @@ def _row_json(row: sqlite3.Row, json_fields: Sequence[str]) -> dict[str, Any]:
     for field in json_fields:
         result[field[:-5] if field.endswith("_json") else field] = json.loads(result.pop(field))
     return result
+
+
+def _execute_script(connection: sqlite3.Connection, script: str) -> None:
+    """Execute migration statements without sqlite3.executescript's implicit commit."""
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                connection.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise RuntimeError("incomplete SQL migration statement")
