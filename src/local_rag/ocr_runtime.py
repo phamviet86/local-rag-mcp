@@ -15,6 +15,11 @@ from pathlib import Path
 PDFIUM_VERSION = "native-v7988"
 ORT_VERSION = "1.27.0"
 OCR_MODEL_REVISION = "oar-ocr-v0.7.0"
+OCR_MODEL_FILES = (
+    "pp-ocrv6_small_det.onnx",
+    "pp-ocrv6_small_rec.onnx",
+    "ppocrv6_dict.txt",
+)
 
 ARTIFACTS: dict[tuple[str, str], dict[str, tuple[str, str]]] = {
     ("linux", "x86_64"): {
@@ -127,16 +132,18 @@ class OCRRuntimeManager:
                 str(temporary),
                 mode="force",
                 page_numbers=[1],
-                model_directory=str(self.model_dir),
                 offline=False,
             )
             if not first.pages:
                 raise RuntimeError("OCR verification produced no page result")
+            resolved_model_dir = self.resolved_model_dir()
+            if resolved_model_dir is None:
+                raise RuntimeError("OCR model cache was not populated with the pinned model files")
             cached = pdf_inspector.process_pdf_with_ocr(
                 str(temporary),
                 mode="force",
                 page_numbers=[1],
-                model_directory=str(self.model_dir),
+                model_directory=str(resolved_model_dir),
                 offline=True,
             )
             if not cached.pages:
@@ -144,12 +151,21 @@ class OCRRuntimeManager:
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
-        manifest["model_cache"] = str(self.model_dir)
+        manifest["model_cache"] = str(resolved_model_dir)
         manifest["verified"] = "true"
         (self.runtime_dir / "manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
         return manifest
+
+    def resolved_model_dir(self) -> Path | None:
+        candidates = [self.model_dir]
+        if self.model_dir.exists():
+            candidates.extend(path.parent for path in self.model_dir.rglob(OCR_MODEL_FILES[0]))
+        for candidate in candidates:
+            if all((candidate / name).is_file() for name in OCR_MODEL_FILES):
+                return candidate.resolve()
+        return None
 
     def paths(self) -> RuntimePaths:
         pdfium_names = ("pdfium.dll", "libpdfium.dylib", "libpdfium.so")

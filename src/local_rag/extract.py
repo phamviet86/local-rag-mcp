@@ -46,10 +46,11 @@ class Extractor:
         if routed:
             if self.ocr_enabled and self.ocr_runtime.configure():
                 try:
+                    model_directory = self.ocr_runtime.resolved_model_dir()
                     result = pdf_inspector.process_pdf_with_ocr(
                         str(path),
                         page_numbers=routed,
-                        model_directory=str(self.ocr_runtime.model_dir),
+                        model_directory=str(model_directory) if model_directory else None,
                         offline=self.ocr_offline,
                     )
                     for ocr_page in result.pages:

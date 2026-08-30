@@ -14,7 +14,7 @@ from local_rag.cli import entrypoint, main, parser
 from local_rag.config import Settings
 from local_rag.embeddings import UnavailableEmbeddings
 from local_rag.mcp import MCPServer
-from local_rag.ocr_runtime import OCRRuntimeManager
+from local_rag.ocr_runtime import OCR_MODEL_FILES, OCRRuntimeManager
 from local_rag.service import MultiSourceRAG
 
 
@@ -66,6 +66,11 @@ class ReadinessTests(unittest.TestCase):
         def process(path: str, **values: object) -> object:
             self.assertTrue(Path(path).exists())
             calls.append(values)
+            if values["offline"] is False:
+                revision = manager.model_dir / "pp-ocrv6-small" / "revision"
+                revision.mkdir(parents=True)
+                for name in OCR_MODEL_FILES:
+                    (revision / name).write_bytes(b"fixture")
             return types.SimpleNamespace(pages=[object()])
 
         fake = types.SimpleNamespace(process_pdf_with_ocr=process)
@@ -76,7 +81,18 @@ class ReadinessTests(unittest.TestCase):
         ):
             result = manager.provision_and_verify()
         self.assertEqual([call["offline"] for call in calls], [False, True])
+        self.assertNotIn("model_directory", calls[0])
+        self.assertTrue(str(calls[1]["model_directory"]).endswith("revision"))
         self.assertEqual(result["verified"], "true")
+
+    def test_ocr_resolves_revision_nested_pdf_inspector_model_cache(self) -> None:
+        manager = OCRRuntimeManager(self.home / "runtime", self.home / "models")
+        revision = manager.model_dir / "pp-ocrv6-small" / "oar-ocr-v0.7.0"
+        revision.mkdir(parents=True)
+        for name in OCR_MODEL_FILES:
+            (revision / name).write_bytes(b"fixture")
+
+        self.assertEqual(manager.resolved_model_dir(), revision.resolve())
 
     def test_zero_source_contract_then_degraded_fts_indexing(self) -> None:
         settings = Settings(root=self.home, home=self.home, ocr_mode="no-ocr")
