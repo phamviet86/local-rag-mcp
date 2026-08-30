@@ -45,13 +45,16 @@ The distribution, product, primary CLI, MCP server, and public namespace are now
 Compatibility is explicit:
 
 - `local-rag` remains an installed CLI alias.
-- Existing `local_rag` Python imports remain supported; new integrations may import
-  `local_rag_mcp.MultiSourceRAG`.
+- Existing storage and the legacy CLI remain supported.
 - `~/.local-rag`, `LOCAL_RAG_HOME`, and existing `LOCAL_RAG_*` embedding variables remain valid.
 - Schema migration v3 registers an existing one-root index as source `default` in place. It does not
   move source files, artifacts, reviews, revisions, metadata, or vectors.
 
 New deployments should use `LOCAL_RAG_MCP_HOME` and `LOCAL_RAG_MCP_*` variables.
+
+`local-rag-mcp` is a standalone service, not an embeddable agent library. Agents and operators must
+integrate through the documented CLI or MCP server. Python modules under `local_rag` are internal
+implementation details, and `local_rag_mcp` intentionally exports only its version marker.
 
 ## Source administration
 
@@ -67,8 +70,9 @@ Local roots are resolved and containment checked. Directory symlinks are not tra
 symlinks must resolve inside their registered root. The same local root cannot be registered twice.
 
 Removing a source deletes only that source's database rows, unreferenced extracted/revision
-artifacts, and source-specific downloaded cache. It never deletes or modifies local files or Drive
-items. Shared content-hash artifacts remain while another source references them.
+artifacts, orphan vectors, and source-specific downloaded cache. It never deletes or modifies local
+files or Drive items. Shared content-hash artifacts and vectors remain while another source
+references them.
 
 ### Google Drive roots and accounts
 
@@ -90,7 +94,9 @@ that path is omitted from reader/status output.
 Token files must have mode `0600` on POSIX. Full sync walks the configured root, rejects incomplete
 Drive listings and unsafe path segments, and supports text/Markdown, PDF, DOCX, XLSX, PPTX, Google
 Docs, Sheets, and Slides. Incremental sync consumes the Drive changes cursor, resolves moves against
-an authoritative bounded tree listing, and downloads/extracts only changed content fingerprints.
+an authoritative bounded tree listing, and downloads/extracts only changed content fingerprints. If
+any changed item fails download, extraction, or indexing, the durable cursor is not advanced, so the
+entire change page is safely retried.
 
 ## Reconcile, watch, reindex, and recovery
 
@@ -130,6 +136,7 @@ local-rag-mcp search "renewal clause" --folder contracts/2026
 local-rag-mcp search "renewal clause" --mode full_text
 local-rag-mcp search "renewal clause" --mode semantic
 local-rag-mcp read contract.pdf --source legal-drive
+local-rag-mcp read legal-drive:contract.pdf
 ```
 
 Modes are `full_text`, `semantic`, and `hybrid` (default). FTS5/BM25 remains local. Hybrid uses
@@ -137,10 +144,18 @@ reciprocal-rank fusion of the ordered BM25 and semantic result lists, avoiding i
 mixing and BM25 sign inversions. If query embeddings fail, hybrid returns FTS results with a warning;
 semantic-only fails clearly.
 
+Folder scopes are literal safe relative paths. Leading or trailing dots are preserved, so names such
+as `.hidden` and `reports.` work normally. Supplying both source and folder applies both filters
+strictly; omitting them searches every enabled source.
+
 Each result includes `source`, `source_kind`, an unambiguous `document_ref`, match provenance, and a
 citation containing source, external ID, authoritative URL when available, relative path, content
 hash, PDF page, and source locators. Automatic metadata, evidence-backed agent metadata, and document
 relationships share the local metadata FTS index.
+
+The returned `document_ref` (`source:relative/path`) can be passed directly to `read` or `metadata`.
+`read` returns source name/kind, external ID, URL, source revision and content hash, indexed time,
+authority, and the extracted source-position provenance alongside the cached text window.
 
 Vectors remain in SQLite and are cached by chunk hash plus a fingerprint of provider, model,
 endpoint, and declared dimensions. Missing unique embeddings are batched; local models load lazily;

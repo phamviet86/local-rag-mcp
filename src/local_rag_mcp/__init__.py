@@ -1,8 +1,7 @@
-"""Public compatibility namespace for local-rag-mcp."""
+"""Version marker for the standalone local-rag-mcp service."""
 
 from __future__ import annotations
 
 from local_rag import __version__
-from local_rag.service import MultiSourceRAG
 
-__all__ = ["MultiSourceRAG", "__version__"]
+__all__ = ["__version__"]

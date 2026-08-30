@@ -37,7 +37,10 @@ READER_TOOLS = [
     },
     {
         "name": "read",
-        "description": "Read cached indexed text with source/page provenance.",
+        "description": (
+            "Read cached indexed text plus source identity, authority, revision/hash, "
+            "and provenance."
+        ),
         "inputSchema": _schema(
             {
                 "path": {"type": "string"},
@@ -374,7 +377,7 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         start: int = 0,
         length: int = 12000,
     ) -> dict[str, Any]:
-        """Read cached indexed text with provenance."""
+        """Read cached text with source identity, authority, revision/hash, and provenance."""
         return dispatcher.call(
             "read", {"path": path, "source": source, "start": start, "length": length}
         )

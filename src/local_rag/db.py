@@ -165,6 +165,14 @@ class Database:
             ).fetchone()
 
     def resolve_document(self, path: str, source: str | None = None) -> sqlite3.Row:
+        if source is None and ":" in path:
+            possible_source, relative_path = path.split(":", 1)
+            try:
+                self.source(possible_source)
+            except ValueError:
+                pass
+            else:
+                source, path = possible_source, relative_path
         with self.connect() as connection:
             source_sql = ""
             values: list[Any] = [path, path, path]
@@ -172,7 +180,8 @@ class Database:
                 source_sql = "AND (d.source_id=? OR s.name=?)"
                 values.extend((source, source))
             rows = connection.execute(
-                f"""SELECT d.* FROM documents d LEFT JOIN sources s ON s.id=d.source_id
+                f"""SELECT d.*,s.name source_name,s.kind source_kind
+                    FROM documents d LEFT JOIN sources s ON s.id=d.source_id
                     WHERE (d.path=? OR d.relative_path=? OR d.external_id=?) {source_sql}
                     ORDER BY d.id LIMIT 2""",
                 values,
@@ -296,7 +305,21 @@ class Database:
                 for document_id in related_document_ids:
                     self._refresh_metadata_index(connection, document_id)
             connection.execute("DELETE FROM sources WHERE id=?", (source["id"],))
-        return {"source": source["name"], "documents_purged": len(document_ids)}
+            vectors_purged = int(
+                connection.execute(
+                    """SELECT count(*) FROM vectors v WHERE NOT EXISTS
+                       (SELECT 1 FROM chunks c WHERE c.chunk_hash=v.chunk_hash)"""
+                ).fetchone()[0]
+            )
+            connection.execute(
+                """DELETE FROM vectors WHERE NOT EXISTS
+                   (SELECT 1 FROM chunks c WHERE c.chunk_hash=vectors.chunk_hash)"""
+            )
+        return {
+            "source": source["name"],
+            "documents_purged": len(document_ids),
+            "vectors_purged": vectors_purged,
+        }
 
     def stats(self) -> dict[str, int]:
         with self.connect() as connection:

@@ -245,7 +245,10 @@ class SearchEngine:
         candidate = Path(scope)
         if candidate.is_absolute() or ".." in candidate.parts:
             raise ValueError("folder scope must be a safe relative path")
-        return candidate.as_posix().strip("./")
+        normalized = candidate.as_posix().strip("/")
+        if not normalized or normalized == ".":
+            raise ValueError("folder scope must identify a relative folder")
+        return normalized
 
     def read(
         self,
@@ -259,9 +262,20 @@ class SearchEngine:
         payload = json.loads(Path(artifact).read_text(encoding="utf-8"))
         end = min(len(payload["text"]), start + length)
         spans = [span for span in payload["spans"] if span["end"] > start and span["start"] < end]
+        source_name = str(document["source_name"])
+        source_kind = str(document["source_kind"])
         return {
+            "document_ref": f"{source_name}:{document['relative_path']}",
+            "source": source_name,
+            "source_kind": source_kind,
             "path": document["relative_path"],
+            "external_id": document["external_id"],
+            "url": document["source_url"],
+            "source_revision": document["source_version"] or None,
+            "source_hash": document["content_hash"],
             "content_hash": document["content_hash"],
+            "indexed_at": document["indexed_at"],
+            "authority": "google_drive" if source_kind == "google_drive" else "local_filesystem",
             "text": payload["text"][start:end],
             "start": start,
             "end": end,

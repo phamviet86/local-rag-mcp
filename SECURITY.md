@@ -22,6 +22,8 @@ maintained as separate supported release lines.
   derived copies of their content. Protect the configured data root accordingly.
 - Reader, reviewer, and admin MCP profiles do not provide authentication or sandbox untrusted agents.
   Expose mutation modes only to trusted local processes.
+- The supported agent boundary is the CLI or MCP server. Internal Python service classes are not a
+  stable public agent API and should not be imported into untrusted agent runtimes.
 - Local OCR and local embedding inference stay on the machine, apart from downloading pinned model
   and runtime assets from the documented upstream sources.
 - OpenAI-compatible embeddings send document chunks and search queries to the configured remote

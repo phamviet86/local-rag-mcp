@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import io
+import json
 import sys
 import tempfile
 import types
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from stat import S_IMODE
 from unittest.mock import patch
 
+import local_rag_mcp
+from local_rag.cli import main
 from local_rag.config import Settings
 from local_rag.drive import DriveChanges, DriveItem, authorize_google
 from local_rag.mcp import MCPServer, create_sdk_server
@@ -34,6 +39,14 @@ class FakeDriveBackend:
 
     def close(self) -> None:
         pass
+
+
+class FakeEmbeddings:
+    identity = ("test", "shared-v1")
+
+    @staticmethod
+    def embed(texts):
+        return [[float(len(text)), 1.0] for text in texts]
 
 
 def drive_item(identifier: str, name: str, version: str, checksum: str) -> DriveItem:
@@ -79,6 +92,17 @@ class MultiSourceTests(unittest.TestCase):
         )
         scoped = service.search("policy", source="alpha", mode="full_text")
         self.assertEqual([hit["source"] for hit in scoped["results"]], ["alpha"])
+        document_ref = scoped["results"][0]["document_ref"]
+        read = service.read(document_ref)
+        self.assertEqual(read["document_ref"], document_ref)
+        self.assertEqual(read["source"], "alpha")
+        self.assertEqual(read["source_kind"], "local")
+        self.assertEqual(read["external_id"], "shared.txt")
+        self.assertEqual(read["authority"], "local_filesystem")
+        self.assertEqual(read["source_hash"], read["content_hash"])
+        self.assertTrue(read["indexed_at"])
+        self.assertTrue(read["provenance"])
+        self.assertIn("automatic", service.metadata(document_ref))
         evidence = [{"path": "alpha:shared.txt", "locator": "line:1", "quote": "alpha orchard"}]
         service.add_relationship(
             "shared.txt",
@@ -102,6 +126,22 @@ class MultiSourceTests(unittest.TestCase):
         self.assertTrue(second.exists())
         self.assertEqual(service.status()["documents"], 1)
         self.assertFalse(service.search("cross", mode="full_text")["results"])
+
+    def test_source_purge_removes_only_unreferenced_vectors(self):
+        (self.root_a / "shared.txt").write_text("shared vector content", encoding="utf-8")
+        (self.root_b / "shared.txt").write_text("shared vector content", encoding="utf-8")
+        (self.root_a / "unique.txt").write_text("unique alpha vector", encoding="utf-8")
+        service = MultiSourceRAG(self.settings, embeddings=FakeEmbeddings())
+        service.add_local_source("alpha", self.root_a)
+        service.add_local_source("bravo", self.root_b)
+        service.reconcile()
+        self.assertEqual(service.status()["vectors"], 2)
+
+        removed = service.remove_source("alpha")
+
+        self.assertEqual(removed["vectors_purged"], 1)
+        self.assertEqual(service.status()["vectors"], 1)
+        self.assertTrue(service.search("shared", mode="semantic")["results"])
 
     def test_legacy_database_and_data_root_migrate_in_place(self):
         legacy_settings = Settings(root=self.root_a, home=self.home)
@@ -128,6 +168,13 @@ class MultiSourceTests(unittest.TestCase):
         hit = service.search("alpha", source="drive-a", mode="full_text")["results"][0]
         self.assertEqual(hit["citation"]["external_id"], "same-id")
         self.assertTrue(hit["citation"]["url"].startswith("https://drive.google.com/"))
+        read = service.read(hit["document_ref"])
+        self.assertEqual(read["source_kind"], "google_drive")
+        self.assertEqual(read["external_id"], "same-id")
+        self.assertEqual(read["url"], hit["citation"]["url"])
+        self.assertEqual(read["source_revision"], first.fingerprint)
+        self.assertEqual(read["authority"], "google_drive")
+        self.assertTrue(read["indexed_at"])
         self.assertEqual(
             service.search("alpha", folder="team", mode="full_text")["results"][0]["source"],
             "drive-a",
@@ -166,6 +213,31 @@ class MultiSourceTests(unittest.TestCase):
         removed = service.remove_source("drive-a")
         self.assertEqual(removed["documents_purged"], 0)
         self.assertFalse(raw_cache.exists())
+
+    def test_drive_item_failure_retains_cursor_and_retries_change(self):
+        initial_item = drive_item("retry-id", "retry.txt", "1", "checksum-1")
+        backend = FakeDriveBackend([initial_item], {"retry-id": b"initial drive text"})
+        service = MultiSourceRAG(self.settings, drive_backend_factory=lambda source: backend)
+        service.add_drive_source(
+            "drive-retry", "root", "account", Path(self.temp.name) / "token.json"
+        )
+        service.reconcile("drive-retry", full=True)
+        self.assertEqual(service.registry.get("drive-retry").cursor, "cursor-1")
+
+        changed = drive_item("retry-id", "retry.txt", "2", "checksum-2")
+        backend.next_changes = DriveChanges((changed,), (), "cursor-2")
+        with patch.object(backend, "download", side_effect=RuntimeError("offline failure")):
+            failed = service.reconcile("drive-retry")
+
+        self.assertTrue(failed["sources"][0]["errors"])
+        self.assertEqual(service.registry.get("drive-retry").cursor, "cursor-1")
+        backend.content["retry-id"] = b"retried drive success"
+        retried = service.reconcile("drive-retry")
+        self.assertFalse(retried["errors"])
+        self.assertEqual(service.registry.get("drive-retry").cursor, "cursor-2")
+        self.assertTrue(
+            service.search("retried", source="drive-retry", mode="full_text")["results"]
+        )
 
     def test_multiple_drive_accounts_can_share_file_ids(self):
         item_a = drive_item("same-id", "account-a.txt", "1", "checksum-a")
@@ -277,6 +349,74 @@ class MultiSourceTests(unittest.TestCase):
         self.assertIn("remove_source", admin.allowed)
         with self.assertRaisesRegex(ValueError, "confirm=true"):
             admin.call("remove_source", {"source": "local", "confirm": False})
+
+    def test_cli_and_mcp_global_and_strict_scope_contracts(self):
+        for root, marker in ((self.root_a, "alpha"), (self.root_b, "bravo")):
+            hidden = root / ".hidden"
+            hidden.mkdir()
+            (hidden / "document.txt").write_text(f"contract scope {marker}", encoding="utf-8")
+        dotted = self.root_a / "reports."
+        dotted.mkdir()
+        (dotted / "report.txt").write_text("contract dotted report", encoding="utf-8")
+        service = MultiSourceRAG(self.settings)
+        service.add_local_source("alpha", self.root_a)
+        service.add_local_source("bravo", self.root_b)
+        service.reconcile()
+
+        mcp = MCPServer(service, "reader")
+        global_mcp = mcp.call("search", {"query": "contract", "mode": "full_text"})
+        self.assertEqual({hit["source"] for hit in global_mcp["results"]}, {"alpha", "bravo"})
+        scoped_mcp = mcp.call(
+            "search",
+            {
+                "query": "contract",
+                "source": "alpha",
+                "folder": ".hidden",
+                "mode": "full_text",
+            },
+        )
+        self.assertEqual(
+            [(hit["source"], hit["path"]) for hit in scoped_mcp["results"]],
+            [("alpha", ".hidden/document.txt")],
+        )
+        document_ref = scoped_mcp["results"][0]["document_ref"]
+        self.assertEqual(mcp.call("read", {"path": document_ref})["document_ref"], document_ref)
+        self.assertIn("automatic", mcp.call("metadata", {"path": document_ref}))
+        self.assertEqual(
+            service.search("contract", folder="reports.", mode="full_text")["results"][0]["path"],
+            "reports./report.txt",
+        )
+
+        global_cli = self._cli_json("search", "contract", "--mode", "full_text")
+        self.assertEqual({hit["source"] for hit in global_cli["results"]}, {"alpha", "bravo"})
+        scoped_cli = self._cli_json(
+            "search",
+            "contract",
+            "--mode",
+            "full_text",
+            "--source",
+            "bravo",
+            "--folder",
+            ".hidden",
+        )
+        self.assertEqual(
+            [(hit["source"], hit["path"]) for hit in scoped_cli["results"]],
+            [("bravo", ".hidden/document.txt")],
+        )
+        cli_document_ref = scoped_cli["results"][0]["document_ref"]
+        self.assertEqual(self._cli_json("read", cli_document_ref)["document_ref"], cli_document_ref)
+        self.assertIn("automatic", self._cli_json("metadata", "get", cli_document_ref))
+
+    def test_package_does_not_export_internal_service_api(self):
+        self.assertEqual(local_rag_mcp.__all__, ["__version__"])
+        self.assertFalse(hasattr(local_rag_mcp, "MultiSourceRAG"))
+
+    def _cli_json(self, *arguments):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = main(["--home", str(self.home), *arguments])
+        self.assertEqual(result, 0)
+        return json.loads(output.getvalue())
 
     def test_sdk_registration_uses_profile_specific_typed_tools(self):
         class FakeAnnotations:

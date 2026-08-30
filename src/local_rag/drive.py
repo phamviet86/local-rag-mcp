@@ -324,8 +324,9 @@ class DriveAdapter:
         report["embedded"] = embedded["embedded"]
         report["warnings"].extend(embedded["warnings"])
         if not target:
+            durable_cursor = self.source.cursor if report["errors"] else cursor
             self.service.db.update_source_sync(
-                self.source.id, cursor, "; ".join(report["errors"]) or None
+                self.source.id, durable_cursor, "; ".join(report["errors"]) or None
             )
         return report
 
