@@ -33,9 +33,9 @@ class Extractor:
         native = pdf_inspector.extract_pages_markdown(str(path))
         routed = list(classification.pages_needing_ocr)
         pages: dict[int, dict[str, Any]] = {}
-        for page in native.pages:
-            number = int(page.page) + 1
-            markdown = (page.markdown or "").strip()
+        for native_page in native.pages:
+            number = int(native_page.page) + 1
+            markdown = (native_page.markdown or "").strip()
             if markdown:
                 pages[number] = {"text": markdown, "source": "native"}
         reviews: list[dict[str, Any]] = []
@@ -47,10 +47,10 @@ class Extractor:
                         page_numbers=routed,
                         offline=False,
                     )
-                    for page in result.pages:
-                        number = int(page.page_number)
-                        markdown = (page.markdown or "").strip()
-                        provenance = page.provenance
+                    for ocr_page in result.pages:
+                        number = int(ocr_page.page_number)
+                        markdown = (ocr_page.markdown or "").strip()
+                        provenance = ocr_page.provenance
                         if markdown:
                             pages[number] = {
                                 "text": markdown,
@@ -83,12 +83,12 @@ class Extractor:
             {"page": page, "reason": "complex_layout", "detail": {}} for page in complex_pages
         )
         builder = _Builder()
-        for number, page in sorted(pages.items()):
+        for number, page_data in sorted(pages.items()):
             builder.add(
-                page["text"],
+                page_data["text"],
                 "pdf_page",
                 f"page:{number}",
-                {key: value for key, value in page.items() if key != "text"},
+                {key: value for key, value in page_data.items() if key != "text"},
             )
         metadata = {
             "pdf_type": classification.pdf_type,

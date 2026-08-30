@@ -368,7 +368,9 @@ class Database:
                 (document["id"], key, json.dumps(value), json.dumps(evidence), actor),
             )
             self._refresh_metadata_index(connection, int(document["id"]))
-            return int(cursor.lastrowid)
+            if cursor.lastrowid is None:
+                raise RuntimeError("metadata insert did not return a row id")
+            return cursor.lastrowid
 
     def metadata(self, path: str) -> dict[str, Any]:
         document = self.resolve_document(path)
@@ -409,7 +411,9 @@ class Database:
             )
             self._refresh_metadata_index(connection, int(source_doc["id"]))
             self._refresh_metadata_index(connection, int(target_doc["id"]))
-            return int(cursor.lastrowid)
+            if cursor.lastrowid is None:
+                raise RuntimeError("relationship insert did not return a row id")
+            return cursor.lastrowid
 
     def review(self, review_id: int) -> sqlite3.Row:
         with self.connect() as connection:

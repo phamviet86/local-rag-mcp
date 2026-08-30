@@ -5,7 +5,7 @@ import json
 import math
 import threading
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -23,7 +23,7 @@ class LocalEmbeddings:
     def __init__(self, model: str, cache_dir: str):
         self.model_name = model
         self.cache_dir = cache_dir
-        self._model = None
+        self._model: Any | None = None
         self._lock = threading.Lock()
 
     @property
@@ -31,7 +31,8 @@ class LocalEmbeddings:
         return "local", self.model_name
 
     def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
-        if self._model is None:
+        model = self._model
+        if model is None:
             with self._lock:
                 if self._model is None:
                     try:
@@ -42,7 +43,10 @@ class LocalEmbeddings:
                             "pip install 'local-rag-mcp[local-embeddings]'"
                         ) from exc
                     self._model = SentenceTransformer(self.model_name, cache_folder=self.cache_dir)
-        return self._model.encode(list(texts), normalize_embeddings=True).tolist()
+                model = self._model
+        if model is None:
+            raise RuntimeError("local embedding model failed to initialize")
+        return model.encode(list(texts), normalize_embeddings=True).tolist()
 
 
 class OpenAIEmbeddings:

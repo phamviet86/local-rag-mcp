@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Protocol
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler, FileSystemMovedEvent
 from watchdog.observers import Observer
 
+from .config import Settings
+from .indexer import Indexer
 from .service import LocalRAG, MultiSourceRAG
+from .sources import SourceRecord
 
 
 @dataclass(frozen=True)
@@ -20,12 +25,17 @@ class PendingChange:
     ready_at: float
 
 
+class WatchTarget(Protocol):
+    settings: Settings
+    indexer: Indexer
+
+
 class CoalescingEventHandler(FileSystemEventHandler):
     RELEVANT_EVENTS = {"created", "modified", "deleted", "moved", "closed"}
 
     def __init__(
         self,
-        service: LocalRAG,
+        service: WatchTarget,
         stabilize_seconds: float = 0.35,
         max_pending: int = 1024,
     ):
@@ -39,11 +49,15 @@ class CoalescingEventHandler(FileSystemEventHandler):
         if event.is_directory or event.event_type not in self.RELEVANT_EVENTS:
             return
         if isinstance(event, FileSystemMovedEvent):
-            source, path, kind = Path(event.src_path), Path(event.dest_path), "moved"
+            source = Path(os.fsdecode(event.src_path))
+            path = Path(os.fsdecode(event.dest_path))
+            kind = "moved"
             if not self._relevant(source) and not self._relevant(path):
                 return
         else:
-            source, path, kind = None, Path(event.src_path), event.event_type
+            source = None
+            path = Path(os.fsdecode(event.src_path))
+            kind = event.event_type
             if not self._relevant(path):
                 return
         key = str(path.resolve())
@@ -90,7 +104,7 @@ class CoalescingEventHandler(FileSystemEventHandler):
                     paths.append(change.path)
             except Exception as exc:
                 errors.append(f"{change.path}: {exc}")
-        indexed = (
+        indexed: dict[str, Any] = (
             self.service.indexer.index_paths(paths)
             if paths
             else {
@@ -138,7 +152,7 @@ class WatchService:
 
 
 class _SourceFacade:
-    def __init__(self, service: MultiSourceRAG, source: object):
+    def __init__(self, service: MultiSourceRAG, source: SourceRecord):
         self.settings = service.indexer_for(source).settings
         self.indexer = service.indexer_for(source)
 
@@ -155,7 +169,7 @@ class MultiSourceWatchService:
             if source.kind != "local":
                 continue
             facade = _SourceFacade(service, source)
-            handler = CoalescingEventHandler(facade)  # type: ignore[arg-type]
+            handler = CoalescingEventHandler(facade)
             self.handlers.append(handler)
             self.observer.schedule(handler, source.locator, recursive=True)
 

@@ -147,6 +147,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     service = MultiSourceRAG(Settings.load(home))
     command = args.command
+    output: object
     if command == "source":
         if args.source_command == "list":
             output = service.sources()

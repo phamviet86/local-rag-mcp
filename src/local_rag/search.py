@@ -162,7 +162,10 @@ class SearchEngine:
             if cached is not None:
                 self._query_cache.move_to_end(key)
                 return cached
-        vector = self.embeddings.embed([query])[0]
+        embeddings = self.embeddings
+        if embeddings is None:
+            raise RuntimeError("no embedding provider is configured")
+        vector = embeddings.embed([query])[0]
         with self._cache_lock:
             self._query_cache[key] = vector
             self._query_cache.move_to_end(key)
@@ -293,7 +296,8 @@ def _scope_sql(scope: str | None, column: str) -> tuple[str, list[str]]:
 
 
 def _filter_sql(scope: str | None, source: str | None) -> tuple[str, list[str]]:
-    clauses, values = [], []
+    clauses: list[str] = []
+    values: list[str] = []
     if source:
         clauses.append("AND (d.source_id=? OR s.name=?)")
         values.extend((source, source))

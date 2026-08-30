@@ -174,7 +174,10 @@ class GoogleDriveBackend:
         return output, str(cursor)
 
     def changes(self, root_id: str, cursor: str) -> DriveChanges:
-        changed_ids, deleted, next_token, new_cursor = set(), set(), cursor, cursor
+        changed_ids: set[str] = set()
+        deleted: set[str] = set()
+        next_token: str | None = cursor
+        new_cursor = cursor
         full_rescan = False
         while next_token:
             payload = self._execute(
@@ -200,8 +203,11 @@ class GoogleDriveBackend:
                     full_rescan = True
                 else:
                     changed_ids.add(file_id)
-            next_token = payload.get("nextPageToken")
-            new_cursor = str(payload.get("newStartPageToken", new_cursor))
+            raw_next_token = payload.get("nextPageToken")
+            next_token = str(raw_next_token) if raw_next_token else None
+            raw_new_cursor = payload.get("newStartPageToken")
+            if raw_new_cursor:
+                new_cursor = str(raw_new_cursor)
         # Resolving paths safely across moves is subtle; a small change set triggers a bounded
         # authoritative tree read; the adapter still downloads/extracts changed fingerprints only.
         items, _ = self.full_scan(root_id)
@@ -247,6 +253,10 @@ class DriveAdapter:
         known = {
             row["external_id"]: row for row in self.service.db.document_snapshot(self.source.id)
         }
+        items: Sequence[DriveItem]
+        cursor: str | None
+        deleted: set[str]
+        mode: str
         if target:
             normalized_target = target.strip("/")
             if not normalized_target or normalized_target in {".", ".."}:

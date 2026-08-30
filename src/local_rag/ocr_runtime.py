@@ -138,23 +138,25 @@ def _sha256(path: Path) -> str:
 def _safe_extract(archive: Path, destination: Path) -> None:
     if archive.suffix == ".zip":
         with zipfile.ZipFile(archive) as source:
-            members = source.infolist()
-            if any(not _within(destination, destination / member.filename) for member in members):
+            zip_members = source.infolist()
+            if any(
+                not _within(destination, destination / member.filename) for member in zip_members
+            ):
                 raise RuntimeError("unsafe path in OCR runtime archive")
             source.extractall(destination)
     else:
         with tarfile.open(archive, "r:gz") as source:
-            members = source.getmembers()
-            if any(not _within(destination, destination / member.name) for member in members):
+            tar_members = source.getmembers()
+            if any(not _within(destination, destination / member.name) for member in tar_members):
                 raise RuntimeError("unsafe path in OCR runtime archive")
-            for member in members:
+            for member in tar_members:
                 if member.issym():
                     link = (destination / member.name).parent / member.linkname
                     if not _within(destination, link):
                         raise RuntimeError("unsafe symbolic link in OCR runtime archive")
                 elif member.islnk() and not _within(destination, destination / member.linkname):
                     raise RuntimeError("unsafe hard link in OCR runtime archive")
-            source.extractall(destination)
+            source.extractall(destination, filter="data")
 
 
 def _within(root: Path, path: Path) -> bool:
