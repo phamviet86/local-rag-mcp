@@ -1,13 +1,16 @@
+from __future__ import annotations
+
 import hashlib
 import json
 import os
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import Any
 
 from .config import Settings
 from .db import Database
-from .embeddings import EmbeddingProvider
+from .embeddings import EmbeddingProvider, cache_identity
 from .extract import Extractor
 from .models import ChunkRecord, ExtractedDocument, SourceSpan
 
@@ -26,8 +29,12 @@ class PreparedDocument:
     extracted: ExtractedDocument
     artifact_path: Path
     chunks: Sequence[ChunkRecord]
-    automatic: Dict[str, Any]
+    automatic: dict[str, Any]
     preserve_derived_state: bool = False
+    relative_path: str | None = None
+    external_id: str | None = None
+    source_version: str = ""
+    source_url: str = ""
 
 
 class Indexer:
@@ -36,16 +43,20 @@ class Indexer:
         settings: Settings,
         database: Database,
         extractor: Extractor,
-        embeddings: Optional[EmbeddingProvider] = None,
+        embeddings: EmbeddingProvider | None = None,
         embedding_batch_size: int = 128,
+        source_id: str = "legacy",
+        source_name: str = "default",
     ):
         self.settings = settings
         self.db = database
         self.extractor = extractor
         self.embeddings = embeddings
         self.embedding_batch_size = embedding_batch_size
+        self.source_id = source_id
+        self.source_name = source_name
 
-    def files(self, target: Optional[Path] = None) -> Iterator[FileSnapshot]:
+    def files(self, target: Path | None = None) -> Iterator[FileSnapshot]:
         base = (target or self.settings.root).resolve()
         if not self.settings.contains(base) or self.settings.excluded(base):
             raise ValueError("target is outside the configured root or excluded")
@@ -80,7 +91,7 @@ class Indexer:
             except (FileNotFoundError, PermissionError, OSError):
                 continue
 
-    def snapshot(self, path: Path) -> Optional[FileSnapshot]:
+    def snapshot(self, path: Path) -> FileSnapshot | None:
         resolved = path.resolve()
         if not self.settings.accepts(resolved) or not resolved.is_file():
             return None
@@ -89,11 +100,11 @@ class Indexer:
 
     def reconcile(
         self,
-        target: Optional[Path] = None,
+        target: Path | None = None,
         force_index: bool = False,
         reextract: bool = False,
-    ) -> Dict[str, Any]:
-        report: Dict[str, Any] = {
+    ) -> dict[str, Any]:
+        report: dict[str, Any] = {
             "discovered": 0,
             "indexed": 0,
             "unchanged": 0,
@@ -103,11 +114,11 @@ class Indexer:
             "warnings": [],
             "errors": [],
         }
-        rows = self.db.document_snapshot()
+        rows = self.db.document_snapshot(self.source_id)
         documents = {row["path"]: row for row in rows}
-        present: Set[str] = set()
-        prepared: List[PreparedDocument] = []
-        stat_updates: List[Tuple[int, FileSnapshot, Dict[str, Any]]] = []
+        present: set[str] = set()
+        prepared: list[PreparedDocument] = []
+        stat_updates: list[tuple[int, FileSnapshot, dict[str, Any]]] = []
         for snapshot in self.files(target):
             report["discovered"] += 1
             present.add(str(snapshot.path))
@@ -154,9 +165,14 @@ class Indexer:
         force_index: bool = False,
         reextract: bool = False,
     ) -> Any:
-        if current is not None and not force_index and not reextract:
-            if current["size"] == snapshot.size and current["modified_ns"] == snapshot.modified_ns:
-                return "unchanged"
+        if (
+            current is not None
+            and not force_index
+            and not reextract
+            and current["size"] == snapshot.size
+            and current["modified_ns"] == snapshot.modified_ns
+        ):
+            return "unchanged"
         content_hash = _file_hash(snapshot.path)
         if current is not None and current["content_hash"] == content_hash and not reextract:
             if force_index:
@@ -183,7 +199,18 @@ class Indexer:
         extracted = _document_from_artifact(json.loads(artifact.read_text(encoding="utf-8")))
         chunks = _chunks(extracted, self.settings.chunk_chars, self.settings.chunk_overlap)
         automatic = json.loads(current["metadata_json"])
-        automatic.update(_automatic_metadata(snapshot, extracted, current["content_hash"]))
+        if current["source_url"]:
+            automatic.update(
+                {
+                    "size": snapshot.size,
+                    "modified_ns": snapshot.modified_ns,
+                    "content_hash": current["content_hash"],
+                    "word_count": len(extracted.text.split()),
+                    "source_positions": len(extracted.spans),
+                }
+            )
+        else:
+            automatic.update(_automatic_metadata(snapshot, extracted, current["content_hash"]))
         return PreparedDocument(
             snapshot,
             current["content_hash"],
@@ -192,6 +219,10 @@ class Indexer:
             chunks,
             automatic,
             preserve_derived_state=True,
+            relative_path=current["relative_path"],
+            external_id=current["external_id"],
+            source_version=current["source_version"],
+            source_url=current["source_url"],
         )
 
     def index_file(
@@ -204,7 +235,7 @@ class Indexer:
         snapshot = self.snapshot(path)
         if snapshot is None:
             return False
-        current = self.db.document(snapshot.path)
+        current = self.db.document(snapshot.path, self.source_id)
         outcome = self._classify(snapshot, current, force_index, reextract)
         if outcome == "unchanged":
             return False
@@ -222,7 +253,7 @@ class Indexer:
             self.embed_pending()
         return True
 
-    def index_paths(self, paths: Sequence[Path]) -> Dict[str, Any]:
+    def index_paths(self, paths: Sequence[Path]) -> dict[str, Any]:
         changed = 0
         errors = []
         for path in dict.fromkeys(path.resolve() for path in paths):
@@ -235,20 +266,29 @@ class Indexer:
 
     def _store(self, connection: Any, document: PreparedDocument) -> int:
         snapshot = document.snapshot
-        relative = snapshot.path.relative_to(self.settings.root).as_posix()
+        relative = (
+            document.relative_path or snapshot.path.relative_to(self.settings.root).as_posix()
+        )
+        external_id = document.external_id or relative
         title = str(document.automatic["title"])
         existing = connection.execute(
-            "SELECT id FROM documents WHERE path=?", (str(snapshot.path),)
+            "SELECT id FROM documents WHERE source_id=? AND path=?",
+            (self.source_id, str(snapshot.path)),
         ).fetchone()
         if existing:
             document_id = int(existing["id"])
             _delete_chunks(connection, document_id)
             if document.preserve_derived_state:
                 connection.execute(
-                    """UPDATE documents SET relative_path=?,size=?,modified_ns=?,title=?,
+                    """UPDATE documents SET relative_path=?,external_id=?,source_version=?,
+                       source_url=?,
+                       size=?,modified_ns=?,title=?,
                        metadata_json=?,indexed_at=CURRENT_TIMESTAMP WHERE id=?""",
                     (
                         relative,
+                        external_id,
+                        document.source_version,
+                        document.source_url,
                         snapshot.size,
                         snapshot.modified_ns,
                         title,
@@ -258,11 +298,16 @@ class Indexer:
                 )
             else:
                 connection.execute(
-                    """UPDATE documents SET relative_path=?,content_hash=?,size=?,modified_ns=?,
+                    """UPDATE documents SET relative_path=?,external_id=?,source_version=?,
+                       source_url=?,
+                       content_hash=?,size=?,modified_ns=?,
                        media_type=?,title=?,metadata_json=?,artifact_path=?,
                        effective_artifact_path=NULL,indexed_at=CURRENT_TIMESTAMP WHERE id=?""",
                     (
                         relative,
+                        external_id,
+                        document.source_version,
+                        document.source_url,
                         document.content_hash,
                         snapshot.size,
                         snapshot.modified_ns,
@@ -278,7 +323,8 @@ class Indexer:
             cursor = connection.execute(
                 """INSERT INTO documents
                    (path,relative_path,content_hash,size,modified_ns,media_type,title,
-                    metadata_json,artifact_path) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    metadata_json,artifact_path,source_id,external_id,source_version,source_url)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(snapshot.path),
                     relative,
@@ -289,6 +335,10 @@ class Indexer:
                     title,
                     json.dumps(document.automatic),
                     str(document.artifact_path),
+                    self.source_id,
+                    external_id,
+                    document.source_version,
+                    document.source_url,
                 ),
             )
             document_id = int(cursor.lastrowid)
@@ -309,6 +359,34 @@ class Indexer:
         self.db._refresh_metadata_index(connection, document_id)
         return document_id
 
+    def store_external(
+        self,
+        key: str,
+        relative_path: str,
+        external_id: str,
+        content_hash: str,
+        extracted: ExtractedDocument,
+        artifact_path: Path,
+        metadata: dict[str, Any],
+        source_version: str = "",
+        source_url: str = "",
+    ) -> int:
+        path = Path(key)
+        prepared = PreparedDocument(
+            FileSnapshot(path, int(metadata.get("size", 0)), int(metadata.get("modified_ns", 0))),
+            content_hash,
+            extracted,
+            artifact_path,
+            _chunks(extracted, self.settings.chunk_chars, self.settings.chunk_overlap),
+            metadata,
+            relative_path=relative_path,
+            external_id=external_id,
+            source_version=source_version,
+            source_url=source_url,
+        )
+        with self.db.transaction() as connection:
+            return self._store(connection, prepared)
+
     @staticmethod
     def _insert_chunks(
         connection: Any,
@@ -320,8 +398,8 @@ class Indexer:
         for chunk in chunks:
             cursor = connection.execute(
                 """INSERT INTO chunks
-                   (document_id,ordinal,text,start_char,end_char,chunk_hash,provenance_json)
-                   VALUES(?,?,?,?,?,?,?)""",
+                   (document_id,ordinal,text,start_char,end_char,chunk_hash,provenance_json,page_number)
+                   VALUES(?,?,?,?,?,?,?,?)""",
                 (
                     document_id,
                     chunk.ordinal,
@@ -330,6 +408,7 @@ class Indexer:
                     chunk.end,
                     chunk.chunk_hash,
                     json.dumps(chunk.provenance),
+                    _chunk_page(chunk.provenance),
                 ),
             )
             connection.execute(
@@ -337,11 +416,11 @@ class Indexer:
                 (chunk.text, title, relative, int(cursor.lastrowid)),
             )
 
-    def embed_pending(self) -> Dict[str, Any]:
-        result: Dict[str, Any] = {"embedded": 0, "warnings": []}
+    def embed_pending(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"embedded": 0, "warnings": []}
         if self.embeddings is None:
             return result
-        provider, model = self.embeddings.identity
+        provider, model = cache_identity(self.embeddings)
         with self.db.connect() as connection:
             rows = connection.execute(
                 """SELECT c.chunk_hash,min(c.text) text FROM chunks c
@@ -362,7 +441,7 @@ class Indexer:
                            (chunk_hash,provider,model,vector_json) VALUES(?,?,?,?)""",
                         [
                             (row["chunk_hash"], provider, model, json.dumps(vector))
-                            for row, vector in zip(batch, vectors)
+                            for row, vector in zip(batch, vectors)  # noqa: B905
                         ],
                     )
                 result["embedded"] += len(batch)
@@ -372,7 +451,7 @@ class Indexer:
         return result
 
     def remove(self, path: Path) -> bool:
-        row = self.db.document(path.resolve())
+        row = self.db.document(path.resolve(), self.source_id)
         if row is None:
             return False
         with self.db.transaction() as connection:
@@ -381,7 +460,7 @@ class Indexer:
 
     def move(self, source: Path, destination: Path) -> bool:
         source, destination = source.resolve(), destination.resolve()
-        source_row = self.db.document(source)
+        source_row = self.db.document(source, self.source_id)
         snapshot = self.snapshot(destination)
         if snapshot is None:
             return self.remove(source)
@@ -400,10 +479,12 @@ class Indexer:
         metadata.update({"size": snapshot.size, "modified_ns": snapshot.modified_ns})
         with self.db.transaction() as connection:
             connection.execute(
-                """UPDATE documents SET path=?,relative_path=?,size=?,modified_ns=?,metadata_json=?
+                """UPDATE documents SET path=?,relative_path=?,external_id=?,size=?,
+                   modified_ns=?,metadata_json=?
                    WHERE id=?""",
                 (
                     str(destination),
+                    relative,
                     relative,
                     snapshot.size,
                     snapshot.modified_ns,
@@ -427,9 +508,9 @@ class Indexer:
         self,
         review_id: int,
         corrected_text: str,
-        evidence: Sequence[Dict[str, Any]],
+        evidence: Sequence[dict[str, Any]],
         actor: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not corrected_text.strip():
             raise ValueError("corrected page text must not be empty")
         self.db._validate_evidence(evidence)
@@ -516,7 +597,7 @@ class Indexer:
 
     def _extract_cached(
         self, path: Path, content_hash: str, use_cache: bool = True
-    ) -> Tuple[ExtractedDocument, Path]:
+    ) -> tuple[ExtractedDocument, Path]:
         artifact = self.settings.extracted_dir / f"{content_hash}.json"
         if use_cache and artifact.exists():
             payload = json.loads(artifact.read_text(encoding="utf-8"))
@@ -537,8 +618,8 @@ class Indexer:
         return extracted, artifact
 
     def _missing_document_ids(
-        self, rows: Sequence[Any], present: Set[str], target: Optional[Path]
-    ) -> List[int]:
+        self, rows: Sequence[Any], present: set[str], target: Path | None
+    ) -> list[int]:
         base = (target or self.settings.root).resolve()
         result = []
         for row in rows:
@@ -560,9 +641,7 @@ def _delete_chunks(connection: Any, document_id: int) -> None:
     connection.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
 
 
-def _delete_document(
-    connection: Any, document_id: int, database: Optional[Database] = None
-) -> None:
+def _delete_document(connection: Any, document_id: int, database: Database | None = None) -> None:
     related = [
         row[0]
         for row in connection.execute(
@@ -588,8 +667,8 @@ def _file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _chunks(document: ExtractedDocument, size: int, overlap: int) -> List[ChunkRecord]:
-    chunks: List[ChunkRecord] = []
+def _chunks(document: ExtractedDocument, size: int, overlap: int) -> list[ChunkRecord]:
+    chunks: list[ChunkRecord] = []
     start, length = 0, len(document.text)
     while start < length:
         end = min(start + size, length)
@@ -627,9 +706,18 @@ def _chunks(document: ExtractedDocument, size: int, overlap: int) -> List[ChunkR
     return chunks
 
 
+def _chunk_page(provenance: Sequence[dict[str, Any]]) -> int | None:
+    pages = {
+        int(item["locator"].split(":", 1)[1])
+        for item in provenance
+        if item.get("kind") == "pdf_page" and str(item.get("locator", "")).startswith("page:")
+    }
+    return next(iter(pages)) if len(pages) == 1 else None
+
+
 def _automatic_metadata(
     snapshot: FileSnapshot, document: ExtractedDocument, content_hash: str
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     path = snapshot.path
     first = next((line.strip("# ") for line in document.text.splitlines() if line.strip()), "")
     title = first[:160] if path.suffix.lower() in {".md", ".markdown"} and first else path.stem
@@ -645,7 +733,7 @@ def _automatic_metadata(
     }
 
 
-def _document_from_artifact(payload: Dict[str, Any]) -> ExtractedDocument:
+def _document_from_artifact(payload: dict[str, Any]) -> ExtractedDocument:
     return ExtractedDocument(
         payload["text"],
         [SourceSpan(**span) for span in payload["spans"]],
@@ -656,12 +744,12 @@ def _document_from_artifact(payload: Dict[str, Any]) -> ExtractedDocument:
 
 
 def _apply_pdf_corrections(
-    base: Dict[str, Any],
-    corrections: Dict[int, str],
-    evidence: Sequence[Dict[str, Any]],
+    base: dict[str, Any],
+    corrections: dict[int, str],
+    evidence: Sequence[dict[str, Any]],
     actor: str,
-) -> Dict[str, Any]:
-    pages: Dict[int, Tuple[str, Dict[str, Any]]] = {}
+) -> dict[str, Any]:
+    pages: dict[int, tuple[str, dict[str, Any]]] = {}
     for span in base["spans"]:
         if span["kind"] != "pdf_page" or not span["locator"].startswith("page:"):
             continue
@@ -672,7 +760,7 @@ def _apply_pdf_corrections(
             text.strip(),
             {"source": "review_correction", "actor": actor, "evidence": list(evidence)},
         )
-    parts: List[str] = []
+    parts: list[str] = []
     spans = []
     length = 0
     for page, (text, metadata) in sorted(pages.items()):

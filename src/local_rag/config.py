@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import json
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import FrozenSet, Iterable, Optional
 
 SUPPORTED_EXTENSIONS = frozenset({".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx", ".pptx"})
 DEFAULT_EXCLUSIONS = frozenset(
@@ -11,22 +13,28 @@ DEFAULT_EXCLUSIONS = frozenset(
 
 
 def default_home() -> Path:
-    return Path(os.environ.get("LOCAL_RAG_HOME", "~/.local-rag")).expanduser().resolve()
+    return (
+        Path(
+            os.environ.get("LOCAL_RAG_MCP_HOME") or os.environ.get("LOCAL_RAG_HOME", "~/.local-rag")
+        )
+        .expanduser()
+        .resolve()
+    )
 
 
 @dataclass(frozen=True)
 class Settings:
     root: Path
     home: Path = field(default_factory=default_home)
-    extensions: FrozenSet[str] = SUPPORTED_EXTENSIONS
-    exclusions: FrozenSet[str] = DEFAULT_EXCLUSIONS
+    extensions: frozenset[str] = SUPPORTED_EXTENSIONS
+    exclusions: frozenset[str] = DEFAULT_EXCLUSIONS
     chunk_chars: int = 1200
     chunk_overlap: int = 150
     reconcile_seconds: float = 60.0
     embedding_provider: str = "none"
-    embedding_model: Optional[str] = None
+    embedding_model: str | None = None
     openai_base_url: str = "https://openrouter.ai/api/v1"
-    openai_api_key: Optional[str] = None
+    openai_api_key: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "root", self.root.expanduser().resolve())
@@ -70,7 +78,9 @@ class Settings:
             self.runtime_dir,
         )
         for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if os.name != "nt":
+                directory.chmod(0o700)
 
     def save(self) -> None:
         self.initialize_layout()
@@ -90,11 +100,13 @@ class Settings:
         temporary.replace(self.config_path)
 
     @classmethod
-    def load(cls, home: Optional[Path] = None) -> "Settings":
+    def load(cls, home: Path | None = None) -> Settings:
         data_home = (home or default_home()).expanduser().resolve()
         path = data_home / "config.json"
         if not path.exists():
-            raise FileNotFoundError(f"not initialized: {path}; run 'local-rag init ROOT'")
+            raise FileNotFoundError(
+                f"not initialized: {path}; run 'local-rag-mcp init [LEGACY_ROOT]'"
+            )
         payload = json.loads(path.read_text(encoding="utf-8"))
         return cls(
             root=Path(payload["root"]),
@@ -104,16 +116,21 @@ class Settings:
             chunk_chars=int(payload.get("chunk_chars", 1200)),
             chunk_overlap=int(payload.get("chunk_overlap", 150)),
             reconcile_seconds=float(payload.get("reconcile_seconds", 60)),
-            embedding_provider=os.environ.get(
+            embedding_provider=os.environ.get("LOCAL_RAG_MCP_EMBEDDING_PROVIDER")
+            or os.environ.get(
                 "LOCAL_RAG_EMBEDDING_PROVIDER", payload.get("embedding_provider", "none")
             ),
-            embedding_model=os.environ.get("LOCAL_RAG_EMBEDDING_MODEL")
+            embedding_model=os.environ.get("LOCAL_RAG_MCP_EMBEDDING_MODEL")
+            or os.environ.get("LOCAL_RAG_EMBEDDING_MODEL")
             or payload.get("embedding_model"),
-            openai_base_url=os.environ.get(
+            openai_base_url=os.environ.get("LOCAL_RAG_MCP_OPENAI_BASE_URL")
+            or os.environ.get(
                 "LOCAL_RAG_OPENAI_BASE_URL",
                 payload.get("openai_base_url", "https://openrouter.ai/api/v1"),
             ),
-            openai_api_key=os.environ.get("LOCAL_RAG_OPENAI_API_KEY") or None,
+            openai_api_key=os.environ.get("LOCAL_RAG_MCP_OPENAI_API_KEY")
+            or os.environ.get("LOCAL_RAG_OPENAI_API_KEY")
+            or None,
         )
 
     def contains(self, path: Path) -> bool:
@@ -132,7 +149,7 @@ class Settings:
     def accepts(self, path: Path) -> bool:
         return not self.excluded(path) and path.suffix.lower() in self.extensions
 
-    def scope(self, value: Optional[str]) -> Optional[Path]:
+    def scope(self, value: str | None) -> Path | None:
         if not value:
             return None
         raw = Path(value)
@@ -147,5 +164,5 @@ def _extension(value: str) -> str:
     return lowered if lowered.startswith(".") else "." + lowered
 
 
-def parse_exclusions(values: Iterable[str]) -> FrozenSet[str]:
+def parse_exclusions(values: Iterable[str]) -> frozenset[str]:
     return frozenset(DEFAULT_EXCLUSIONS.union(value for value in values if value))

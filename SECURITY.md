@@ -20,11 +20,13 @@ maintained as separate supported release lines.
 
 - Source documents remain authoritative, but SQLite and artifact/revision directories contain
   derived copies of their content. Protect the configured data root accordingly.
-- Reader, reviewer, and admin MCP modes do not provide authentication or sandbox untrusted agents.
+- Reader, reviewer, and admin MCP profiles do not provide authentication or sandbox untrusted agents.
   Expose mutation modes only to trusted local processes.
 - Local OCR and local embedding inference stay on the machine, apart from downloading pinned model
   and runtime assets from the documented upstream sources.
 - OpenAI-compatible embeddings send document chunks and search queries to the configured remote
   endpoint. Credentials are read from environment variables and must not be committed.
+- Google Drive adapters request the read-only Drive scope. OAuth token files must remain outside the
+  repository with owner-only permissions; the source registry stores only their paths.
 - Runtime downloads are pinned and checksum verified. Treat changes to their URLs, versions, or
   checksums as security-sensitive review items.

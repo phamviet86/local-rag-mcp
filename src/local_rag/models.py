@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -8,16 +10,16 @@ class SourceSpan:
     locator: str
     start: int
     end: int
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ExtractedDocument:
     text: str
-    spans: List[SourceSpan]
+    spans: list[SourceSpan]
     media_type: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    reviews: List[Dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    reviews: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -27,4 +29,4 @@ class ChunkRecord:
     start: int
     end: int
     chunk_hash: str
-    provenance: List[Dict[str, Any]]
+    provenance: list[dict[str, Any]]

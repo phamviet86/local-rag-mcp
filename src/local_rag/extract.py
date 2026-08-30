@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import mimetypes
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .models import ExtractedDocument, SourceSpan
 from .ocr_runtime import OCRRuntimeManager
@@ -30,13 +32,13 @@ class Extractor:
         classification = pdf_inspector.process_pdf(str(path))
         native = pdf_inspector.extract_pages_markdown(str(path))
         routed = list(classification.pages_needing_ocr)
-        pages: Dict[int, Dict[str, Any]] = {}
+        pages: dict[int, dict[str, Any]] = {}
         for page in native.pages:
             number = int(page.page) + 1
             markdown = (page.markdown or "").strip()
             if markdown:
                 pages[number] = {"text": markdown, "source": "native"}
-        reviews: List[Dict[str, Any]] = []
+        reviews: list[dict[str, Any]] = []
         if routed:
             if self.ocr_runtime.configure():
                 try:
@@ -100,12 +102,12 @@ class Extractor:
 
 class _Builder:
     def __init__(self) -> None:
-        self.parts: List[str] = []
-        self.spans: List[SourceSpan] = []
+        self.parts: list[str] = []
+        self.spans: list[SourceSpan] = []
         self.length = 0
 
     def add(
-        self, value: str, kind: str, locator: str, metadata: Optional[Dict[str, Any]] = None
+        self, value: str, kind: str, locator: str, metadata: dict[str, Any] | None = None
     ) -> None:
         cleaned = value.strip()
         if not cleaned:

@@ -125,7 +125,7 @@ class WorkflowTests(unittest.TestCase):
                 "params": {"protocolVersion": "2024-11-05"},
             }
         )
-        self.assertEqual(initialized["result"]["serverInfo"]["name"], "local-rag")
+        self.assertEqual(initialized["result"]["serverInfo"]["name"], "local-rag-mcp")
         listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = {tool["name"] for tool in listed["result"]["tools"]}
         self.assertIn("read", names)

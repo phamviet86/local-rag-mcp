@@ -1,6 +1,11 @@
+from __future__ import annotations
+
+import hashlib
 import json
+import math
 import threading
-from typing import Optional, Protocol, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -9,7 +14,7 @@ from .config import Settings
 
 class EmbeddingProvider(Protocol):
     @property
-    def identity(self) -> Tuple[str, str]: ...
+    def identity(self) -> tuple[str, str]: ...
 
     def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]: ...
 
@@ -22,7 +27,7 @@ class LocalEmbeddings:
         self._lock = threading.Lock()
 
     @property
-    def identity(self) -> Tuple[str, str]:
+    def identity(self) -> tuple[str, str]:
         return "local", self.model_name
 
     def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
@@ -34,7 +39,7 @@ class LocalEmbeddings:
                     except ImportError as exc:
                         raise RuntimeError(
                             "install local embeddings with: "
-                            "pip install 'local-rag[local-embeddings]'"
+                            "pip install 'local-rag-mcp[local-embeddings]'"
                         ) from exc
                     self._model = SentenceTransformer(self.model_name, cache_folder=self.cache_dir)
         return self._model.encode(list(texts), normalize_embeddings=True).tolist()
@@ -50,12 +55,15 @@ class OpenAIEmbeddings:
         )
 
     @property
-    def identity(self) -> Tuple[str, str]:
+    def identity(self) -> tuple[str, str]:
         return "openai", self.model
 
     def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
         if not self.api_key:
-            raise RuntimeError("LOCAL_RAG_OPENAI_API_KEY is required for remote embeddings")
+            raise RuntimeError(
+                "LOCAL_RAG_MCP_OPENAI_API_KEY is required for remote embeddings "
+                "(legacy LOCAL_RAG_OPENAI_API_KEY is also supported)"
+            )
         request = Request(
             f"{self.base_url}/embeddings",
             data=json.dumps({"model": self.model, "input": list(texts)}).encode(),
@@ -67,9 +75,15 @@ class OpenAIEmbeddings:
                 payload = json.loads(response.read().decode())
         except (HTTPError, URLError, ValueError) as exc:
             raise RuntimeError(f"embedding request failed: {exc}") from exc
-        return [
+        vectors = [
             item["embedding"] for item in sorted(payload["data"], key=lambda item: item["index"])
         ]
+        if len(vectors) != len(texts):
+            raise RuntimeError("embedding endpoint returned an unexpected vector count")
+        dimensions = {len(vector) for vector in vectors}
+        if len(dimensions) != 1 or 0 in dimensions:
+            raise RuntimeError("embedding endpoint returned inconsistent vector dimensions")
+        return [_normalize(vector) for vector in vectors]
 
 
 class UnavailableEmbeddings:
@@ -78,24 +92,59 @@ class UnavailableEmbeddings:
         self.reason = reason
 
     @property
-    def identity(self) -> Tuple[str, str]:
+    def identity(self) -> tuple[str, str]:
         return self._identity
 
     def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
         raise RuntimeError(self.reason)
 
 
-def configured_provider(settings: Settings) -> Optional[EmbeddingProvider]:
+def configured_provider(settings: Settings) -> EmbeddingProvider | None:
     if settings.embedding_provider == "none":
         return None
     if not settings.embedding_model:
         return UnavailableEmbeddings(
             settings.embedding_provider,
             "unconfigured",
-            "LOCAL_RAG_EMBEDDING_MODEL is required when embeddings are enabled",
+            "LOCAL_RAG_MCP_EMBEDDING_MODEL is required when embeddings are enabled "
+            "(legacy LOCAL_RAG_EMBEDDING_MODEL is also supported)",
         )
     if settings.embedding_provider == "local":
         return LocalEmbeddings(settings.embedding_model, str(settings.cache_dir / "embeddings"))
     return OpenAIEmbeddings(
         settings.openai_base_url, settings.openai_api_key or "", settings.embedding_model
     )
+
+
+def cache_identity(provider: EmbeddingProvider) -> tuple[str, str]:
+    """Bind cached vectors to provider, model, endpoint, and declared dimensions."""
+    name, model = provider.identity
+    payload = {
+        "provider": name,
+        "model": model,
+        "endpoint": getattr(provider, "base_url", "local"),
+        "dimensions": getattr(provider, "dimensions", None),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:20]
+    return name, f"{model}#{fingerprint}"
+
+
+def public_identity(provider: EmbeddingProvider | None) -> dict | None:
+    if provider is None:
+        return None
+    name, model = provider.identity
+    _, cache_key = cache_identity(provider)
+    return {
+        "provider": name,
+        "model": model,
+        "endpoint": getattr(provider, "base_url", "local"),
+        "dimensions": getattr(provider, "dimensions", None),
+        "fingerprint": cache_key.rsplit("#", 1)[-1],
+    }
+
+
+def _normalize(vector: Sequence[float]) -> list:
+    norm = math.sqrt(sum(float(value) * float(value) for value in vector)) or 1.0
+    return [float(value) / norm for value in vector]

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import json
 import os
@@ -8,13 +10,12 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple
 
 PDFIUM_VERSION = "native-v7988"
 ORT_VERSION = "1.27.0"
 OCR_MODEL_REVISION = "oar-ocr-v0.7.0"
 
-ARTIFACTS: Dict[Tuple[str, str], Dict[str, Tuple[str, str]]] = {
+ARTIFACTS: dict[tuple[str, str], dict[str, tuple[str, str]]] = {
     ("linux", "x86_64"): {
         "pdfium": (
             "https://github.com/firecrawl/pdfium-rs/releases/download/native-v7988/firecrawl-pdfium-linux-x64.tgz",
@@ -70,13 +71,13 @@ class OCRRuntimeManager:
         self.model_dir = model_dir
 
     @staticmethod
-    def platform_key() -> Tuple[str, str]:
+    def platform_key() -> tuple[str, str]:
         system = platform.system().lower()
         machine = platform.machine().lower()
         aliases = {"amd64": "x86_64"} if system != "windows" else {"x86_64": "amd64"}
         return system, aliases.get(machine, machine)
 
-    def install(self) -> Dict[str, str]:
+    def install(self) -> dict[str, str]:
         key = self.platform_key()
         if key not in ARTIFACTS:
             raise RuntimeError(f"no pinned OCR runtime for {key[0]}/{key[1]}")
@@ -161,7 +162,7 @@ def _within(root: Path, path: Path) -> bool:
     return resolved == resolved_root or resolved_root in resolved.parents
 
 
-def _find_library(root: Path, names: Tuple[str, ...]) -> Path:
+def _find_library(root: Path, names: tuple[str, ...]) -> Path:
     for name in names:
         matches = list(root.rglob(name)) if root.exists() else []
         if matches:

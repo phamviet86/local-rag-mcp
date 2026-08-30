@@ -1,21 +1,22 @@
+from __future__ import annotations
+
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler, FileSystemMovedEvent
 from watchdog.observers import Observer
 
-from .service import LocalRAG
+from .service import LocalRAG, MultiSourceRAG
 
 
 @dataclass(frozen=True)
 class PendingChange:
     kind: str
     path: Path
-    source: Optional[Path]
+    source: Path | None
     ready_at: float
 
 
@@ -66,7 +67,7 @@ class CoalescingEventHandler(FileSystemEventHandler):
             and resolved.suffix.lower() in self.service.settings.extensions
         )
 
-    def flush_ready(self, force: bool = False) -> Dict[str, object]:
+    def flush_ready(self, force: bool = False) -> dict[str, object]:
         now = time.monotonic()
         with self._lock:
             ready = [
@@ -76,9 +77,9 @@ class CoalescingEventHandler(FileSystemEventHandler):
             ]
             for key, _ in ready:
                 self._pending.pop(key, None)
-        paths: List[Path] = []
+        paths: list[Path] = []
         changed = 0
-        errors: List[str] = []
+        errors: list[str] = []
         for _, change in ready:
             try:
                 if change.kind == "moved" and change.source is not None:
@@ -129,6 +130,49 @@ class WatchService:
                     last_reconcile = time.monotonic()
         finally:
             self.handler.flush_ready(force=True)
+            self.observer.stop()
+            self.observer.join()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+
+
+class _SourceFacade:
+    def __init__(self, service: MultiSourceRAG, source: object):
+        self.settings = service.indexer_for(source).settings
+        self.indexer = service.indexer_for(source)
+
+
+class MultiSourceWatchService:
+    """One native observer with one coalescing handler per enabled local source."""
+
+    def __init__(self, service: MultiSourceRAG):
+        self.service = service
+        self.observer = Observer()
+        self.handlers: list[CoalescingEventHandler] = []
+        self.stop_event = threading.Event()
+        for source in service.registry.list(enabled=True):
+            if source.kind != "local":
+                continue
+            facade = _SourceFacade(service, source)
+            handler = CoalescingEventHandler(facade)  # type: ignore[arg-type]
+            self.handlers.append(handler)
+            self.observer.schedule(handler, source.locator, recursive=True)
+
+    def run(self) -> None:
+        self.service.reconcile()
+        self.observer.start()
+        last_reconcile = time.monotonic()
+        try:
+            while not self.stop_event.wait(0.1):
+                for handler in self.handlers:
+                    handler.flush_ready()
+                if time.monotonic() - last_reconcile >= self.service.settings.reconcile_seconds:
+                    self.service.reconcile()
+                    last_reconcile = time.monotonic()
+        finally:
+            for handler in self.handlers:
+                handler.flush_ready(force=True)
             self.observer.stop()
             self.observer.join()
 
