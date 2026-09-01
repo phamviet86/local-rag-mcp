@@ -53,7 +53,7 @@ google-drive = [
 local-embeddings = ["sentence-transformers>=3,<7"]
 dev = [
   "build>=1.2,<2",
-  "mypy==1.20.2",
+  "mypy==2.3.1",
   "pytest>=8,<10",
   "pytest-cov>=5,<8",
   "ruff>=0.5",
