@@ -8,9 +8,9 @@ It is a standalone service: use its CLI or MCP server, not its internal Python m
 
 ## Release status and identity
 
-This repository is preparing **v0.7.0** as a release candidate. It is currently private and has no
-published GitHub Release or PyPI release. Do not present it as already published or install it from
-an unverified third-party artifact.
+**v0.7.0** was released on 2026-09-01. Download its wheel and source archive only from the
+[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0); this project does
+not currently publish packages to PyPI.
 
 | Purpose | Name |
 | --- | --- |
@@ -19,8 +19,8 @@ an unverified third-party artifact.
 | Legacy CLI alias | `local-rag` |
 
 The PyPI project named `local-rag-mcp` belongs to an unrelated project. **Never run**
-`pip install local-rag-mcp` or `pip install 'local-rag-mcp[...]'` for this software. Once a release
-is explicitly published, install the unique distribution named `phamviet-local-rag-mcp` instead.
+`pip install local-rag-mcp` or `pip install 'local-rag-mcp[...]'` for this software. Install the
+unique distribution `phamviet-local-rag-mcp` from this repository's GitHub Release instead.
 
 The project is licensed under [Apache-2.0](LICENSE). It is an independent community project and is
 not affiliated with any similarly named PyPI project.
@@ -30,34 +30,34 @@ Python **3.11–3.13** and SQLite with FTS5 are supported. See the
 
 ## Install a published GitHub Release
 
-There is no release asset yet. When a maintainer publishes one, download the wheel attached to that
-GitHub Release and install it in a dedicated production virtual environment. Do not guess a release
-URL or version; replace the example wheel path with the file you actually downloaded and verified.
+Install the v0.7.0 release wheel into a dedicated production virtual environment; cloning the
+repository is not required. The [release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0)
+also publishes SHA-256 checksums for its assets.
 
 ```bash
 mkdir -p "$HOME/.local/share/local-rag-mcp"
 python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
 python -m pip install --upgrade pip
-python -m pip install "$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+python -m pip install \
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
 local-rag-mcp --help
 ```
 
-Optional capabilities are explicit. For a GitHub Release wheel, use the unique distribution name
-with a local `file://` wheel reference:
+Optional capabilities are explicit. Add them from the same wheel with the unique distribution name:
 
 ```bash
 # Local embedding model support
-python -m pip install "phamviet-local-rag-mcp[local-embeddings] @ file://$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+python -m pip install \
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
 
 # Google Drive source support
-python -m pip install "phamviet-local-rag-mcp[google-drive] @ file://$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+python -m pip install \
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
 ```
 
-After a matching version has been explicitly published to PyPI, the unique distribution name can be
-used instead: `python -m pip install 'phamviet-local-rag-mcp[local-embeddings]'` or
-`python -m pip install 'phamviet-local-rag-mcp[google-drive]'`. Do not substitute
-`local-rag-mcp[...]` in either installation method.
+Do not substitute `local-rag-mcp[...]` in either installation method: that PyPI name is unrelated
+to this project.
 
 For a checkout used to contribute code, follow the development instructions in
 [AGENTS.md](AGENTS.md); editable installs are not the production deployment path.

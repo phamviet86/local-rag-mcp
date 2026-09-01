@@ -3,8 +3,8 @@
 `local-rag-mcp` is a standalone local service. Agents integrate through its CLI or MCP server;
 internal Python modules are not a supported agent API. The package distribution is
 `phamviet-local-rag-mcp`; never direct users to install the unrelated PyPI project named
-`local-rag-mcp`. The release-candidate license is Apache-2.0; do not claim that a GitHub Release or
-PyPI package already exists.
+`local-rag-mcp`. The project is Apache-2.0 and v0.7.0 is distributed through this repository's
+GitHub Release; it does not currently publish packages to PyPI.
 
 Start with `doctor`, `status`, and `sources`. Search without scope is global across enabled sources;
 when a source or folder is supplied, treat it as strict. Cite returned source identity, path, URL,

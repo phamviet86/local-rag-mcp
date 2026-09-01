@@ -1,8 +1,9 @@
 # Deployment and lifecycle
 
 This guide is the release path for macOS and Linux machines that should use `local-rag-mcp` normally.
-It assumes a trusted local user and a released wheel. The repository is currently preparing v0.7.0;
-until a maintainer creates a GitHub Release, no wheel or checksum is available to download.
+It assumes a trusted local user and a released wheel. **v0.7.0** was released on 2026-09-01; use the
+[v0.7.0 GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0) for its
+wheel, source archive, and SHA-256 checksums.
 
 ## Distribution identity
 
@@ -13,8 +14,8 @@ until a maintainer creates a GitHub Release, no wheel or checksum is available t
 | License | Apache-2.0 |
 
 The PyPI name `local-rag-mcp` is an unrelated project. Do not install it, with or without extras.
-Only install a wheel attached to this repository's reviewed GitHub Release, or—after an explicit PyPI
-publication—the unique `phamviet-local-rag-mcp` distribution.
+Only install the unique `phamviet-local-rag-mcp` distribution from this repository's reviewed GitHub
+Release. This project does not currently publish packages to PyPI.
 
 ## Support matrix
 
@@ -30,37 +31,32 @@ publication—the unique `phamviet-local-rag-mcp` distribution.
 
 ## Install a release wheel
 
-Before installing, confirm the GitHub Release belongs to `phamviet86/local-rag-mcp`, select its
-attached wheel, and compare its SHA-256 checksum with the value in the release notes. Store the
-download outside the repository.
+Install directly from the v0.7.0 GitHub Release; cloning the repository is not required. For a
+higher-assurance installation, download the wheel, compare its SHA-256 digest with `SHA256SUMS` on
+the [release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0), then install
+the verified local file instead.
 
 ```bash
 mkdir -p "$HOME/.local/share/local-rag-mcp"
 python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
 python -m pip install --upgrade pip
-shasum -a 256 "$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
-python -m pip install "$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+python -m pip install \
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
 local-rag-mcp --help
 ```
 
-The filename and checksum above are examples, not a claim that v0.7.0 has been released. Use the
-exact published filename and checksum. Install wheel extras directly from that wheel:
+Install wheel extras directly from the same release wheel:
 
 ```bash
-python -m pip install "phamviet-local-rag-mcp[local-embeddings] @ file://$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
-python -m pip install "phamviet-local-rag-mcp[google-drive] @ file://$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+python -m pip install \
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+python -m pip install \
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
 ```
 
-If PyPI is later announced as a release channel, use only:
-
-```bash
-python -m pip install 'phamviet-local-rag-mcp[local-embeddings]'
-python -m pip install 'phamviet-local-rag-mcp[google-drive]'
-```
-
-Extras may be combined if the published release supports both. Do not substitute
-`local-rag-mcp[...]` in any command.
+Extras may be combined if needed. Do not substitute `local-rag-mcp[...]` in any command: that PyPI
+package is unrelated to this project.
 
 ## Initialize and connect Codex
 
@@ -147,9 +143,9 @@ environment manually. Preserve `~/.local-rag` unless the operator explicitly wan
 index, cached derived content, OCR reviews, and configuration. Source directories and Google Drive
 items are never deleted by this project.
 
-## Release operator checklist
+## Maintainer checklist for future releases
 
-Before publishing, confirm the tag/version, Apache-2.0 license, clean build of wheel and sdist,
+Before publishing a later release, confirm the tag/version, Apache-2.0 license, clean build of wheel and sdist,
 distribution metadata, checksum, isolated wheel installation, `setup --no-ocr`, SQLite/FTS5,
 MCP initialize/tool list, and existing test/CI gates. Attach wheel, sdist, checksums, and concise
 release notes to the GitHub Release. Publish to PyPI only under `phamviet-local-rag-mcp` after the

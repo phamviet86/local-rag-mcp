@@ -52,13 +52,13 @@ local-rag-mcp source add-local engineering /srv/engineering --exclude archive --
 
 ## Add a Google Drive source (optional)
 
-Install the `google-drive` extra from the release wheel when the published release says it is needed.
-OAuth provisioning happens only on the operator's machine and is intentionally unavailable through
-MCP.
+Install the `google-drive` extra from the v0.7.0 release wheel when it is needed. OAuth provisioning
+happens only on the operator's machine and is intentionally unavailable through MCP.
 
 ```bash
-# GitHub Release wheel; replace with the published filename.
-python -m pip install "phamviet-local-rag-mcp[google-drive] @ file://$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+# v0.7.0 GitHub Release wheel
+python -m pip install \
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
 
 local-rag-mcp auth-google \
   --client-secret /secure/google-desktop-client.json \
@@ -81,18 +81,16 @@ warning if embeddings are unavailable, while `semantic` fails clearly. Local emb
 remote providers are both opt-in.
 
 ```bash
-# GitHub Release wheel; replace with the published filename.
-python -m pip install "phamviet-local-rag-mcp[local-embeddings] @ file://$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+# v0.7.0 GitHub Release wheel
+python -m pip install \
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
 export LOCAL_RAG_MCP_EMBEDDING_PROVIDER=local
 export LOCAL_RAG_MCP_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 local-rag-mcp doctor --json
 local-rag-mcp reindex --all
 ```
 
-After explicit PyPI publication, the equivalent commands are
-`python -m pip install 'phamviet-local-rag-mcp[google-drive]'` and
-`python -m pip install 'phamviet-local-rag-mcp[local-embeddings]'`. For an OpenAI-compatible
-endpoint, configure these only in an operator-controlled environment:
+For an OpenAI-compatible endpoint, configure these only in an operator-controlled environment:
 
 ```bash
 export LOCAL_RAG_MCP_EMBEDDING_PROVIDER=openai

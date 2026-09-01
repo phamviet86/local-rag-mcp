@@ -8,8 +8,9 @@ README tiếng Anh là tài liệu chuẩn: [README.md](README.md).
 
 ## Trạng thái phát hành
 
-Mục tiêu hiện tại là release candidate **v0.7.0**. Repository đang private và **chưa có GitHub
-Release hoặc PyPI release**. Không coi đây là bản đã phát hành, không cài từ artifact không rõ nguồn.
+**v0.7.0** đã phát hành ngày 2026-09-01. Tải wheel và source archive duy nhất từ
+[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0); hiện dự án chưa
+phát hành package lên PyPI.
 
 | Mục đích | Tên |
 | --- | --- |
@@ -17,30 +18,34 @@ Release hoặc PyPI release**. Không coi đây là bản đã phát hành, khô
 | Python distribution | `phamviet-local-rag-mcp` |
 
 PyPI đã có một dự án khác tên `local-rag-mcp`. Vì vậy tuyệt đối không dùng `pip install
-local-rag-mcp` hoặc `pip install 'local-rag-mcp[...]'`. Khi maintainer công bố bản chính thức, cài
-wheel từ GitHub Release trước; PyPI (nếu có) phải dùng tên duy nhất `phamviet-local-rag-mcp`.
+local-rag-mcp` hoặc `pip install 'local-rag-mcp[...]'`. Cài distribution duy nhất
+`phamviet-local-rag-mcp` từ GitHub Release của repository này.
 
 Dự án dùng license [Apache-2.0](LICENSE), độc lập và không liên kết với dự án PyPI trùng tên.
 
 ## Cài trên máy khác
 
-Sau khi có GitHub Release, tải đúng wheel đính kèm release, kiểm tra checksum do release notes cung
-cấp, sau đó cài trong virtual environment riêng (Python 3.11–3.13):
+Cài trực tiếp wheel v0.7.0 vào virtual environment riêng (Python 3.11–3.13); không cần clone mã
+nguồn. [Trang release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0) công bố
+SHA-256 cho từng artifact:
 
 ```bash
 mkdir -p "$HOME/.local/share/local-rag-mcp"
 python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
-python -m pip install "$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+python -m pip install \
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
 local-rag-mcp setup --no-ocr
 local-rag-mcp doctor --json
 ```
 
-Extras có thể cài trực tiếp từ wheel release (thay đúng filename đã phát hành):
+Extras cài từ cùng wheel release bằng distribution đúng:
 
 ```bash
-python -m pip install "phamviet-local-rag-mcp[local-embeddings] @ file://$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
-python -m pip install "phamviet-local-rag-mcp[google-drive] @ file://$HOME/Downloads/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+python -m pip install \
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+python -m pip install \
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
 ```
 
 `setup --full` tải và kiểm tra runtime OCR local; `setup --no-ocr` vẫn hỗ trợ text/Office/native PDF
