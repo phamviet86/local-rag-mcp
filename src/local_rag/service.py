@@ -565,7 +565,7 @@ class MultiSourceRAG:
             "message": embedding_message,
         }
         if embedding_action == "install_local_embeddings":
-            actions.append({"command": "pip install 'local-rag-mcp[local-embeddings]'"})
+            actions.append({"command": "pip install 'phamviet-local-rag-mcp[local-embeddings]'"})
         elif embedding_action == "configure_openai_key":
             actions.append({"command": "export LOCAL_RAG_MCP_OPENAI_API_KEY='...'"})
         elif embedding_action == "configure_embedding_model":

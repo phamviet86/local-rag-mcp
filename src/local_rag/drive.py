@@ -85,7 +85,7 @@ class GoogleDriveBackend:
             from googleapiclient.discovery import build
         except ImportError as exc:
             raise RuntimeError(
-                "Google Drive support requires: pip install 'local-rag-mcp[google-drive]'"
+                "Google Drive support requires: pip install 'phamviet-local-rag-mcp[google-drive]'"
             ) from exc
         token = Path(str(source.config.get("token_file", ""))).expanduser()
         if not token.is_file():
@@ -472,7 +472,7 @@ def authorize_google(token_file: Path, client_secret: Path) -> Path:
         from google_auth_oauthlib.flow import InstalledAppFlow
     except ImportError as exc:
         raise RuntimeError(
-            "Google Drive auth requires: pip install 'local-rag-mcp[google-drive]'"
+            "Google Drive auth requires: pip install 'phamviet-local-rag-mcp[google-drive]'"
         ) from exc
     payload = json.loads(client_secret.read_text(encoding="utf-8"))
     if not payload.get("installed", {}).get("client_id"):

@@ -217,9 +217,14 @@ class ReadinessTests(unittest.TestCase):
             embedding_model="local/model",
         )
         with patch("local_rag.embeddings.find_spec", return_value=None):
-            missing_dependency = MultiSourceRAG(local).doctor()["checks"]["embeddings"]
+            local_doctor = MultiSourceRAG(local).doctor()
+            missing_dependency = local_doctor["checks"]["embeddings"]
         self.assertFalse(missing_dependency["available"])
         self.assertIn("dependency", missing_dependency["message"])
+        self.assertIn(
+            {"command": "pip install 'phamviet-local-rag-mcp[local-embeddings]'"},
+            local_doctor["actions"],
+        )
 
 
 if __name__ == "__main__":

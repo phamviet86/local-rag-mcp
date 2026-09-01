@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "local-rag-mcp": {
-      "command": "/absolute/path/to/venv/bin/local-rag-mcp-server",
+      "command": "/absolute/path/to/local-rag-mcp/.venv/bin/local-rag-mcp-server",
       "env": {
         "LOCAL_RAG_MCP_HOME": "/absolute/path/to/.local-rag",
         "LOCAL_RAG_MCP_PROFILE": "reader"

@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .config import Settings, default_home, parse_exclusions
 from .search import SEARCH_MODES
 from .service import MultiSourceRAG
@@ -17,6 +18,7 @@ from .service import MultiSourceRAG
 
 def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog=prog)
+    result.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     result.add_argument(
         "--home", type=Path, default=default_home(), help="shared data root (default ~/.local-rag)"
     )

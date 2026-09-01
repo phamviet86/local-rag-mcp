@@ -1,54 +1,62 @@
 # Agent workflow
 
-Connect through MCP stdio with the narrowest profile. Call `doctor`, `sources`, and `status` before
-retrieval. If no source is configured, ask the operator whether to index a local folder or a Google
-Drive root/account, then point them to the CLI commands returned in the structured error. Agents
-must not collect credential contents.
+`local-rag-mcp` is a local service for trusted agents. Integrate through its MCP server or CLI; its
+Python modules are not a public agent API. This guide supplements the repository-level contribution
+rules in [../AGENTS.md](../AGENTS.md).
 
-Source provisioning is CLI-only. Give the operator one of these copy-ready starting points:
+## Connect safely
+
+Use the narrowest MCP profile. A normal retrieval agent gets `reader`:
+
+```bash
+codex mcp add local-rag-mcp \
+  --env LOCAL_RAG_MCP_HOME="$HOME/.local-rag" \
+  --env LOCAL_RAG_MCP_PROFILE=reader \
+  -- "$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp-server"
+```
+
+The configured executable must be an absolute path belonging to the intended isolated environment.
+Profiles expose capabilities only; they are not authentication or a sandbox. Give `reviewer` and
+`admin` only to trusted local processes with operator approval.
+
+## Retrieval sequence
+
+1. Start with `doctor`, `status`, and `sources`.
+2. If sources are enabled, use global `search` or strict `source`/`folder` filters.
+3. Use the returned `document_ref` in `read`.
+4. Preserve returned citation/provenance fields: source, relative path, URL where present, content
+   hash/revision, page, and locator.
+
+Prefer hybrid retrieval if embeddings are available. If it reports fallback, use the full-text
+results honestly. When embeddings are unavailable, full-text retrieval remains usable; do not claim
+the entire index is unavailable. When OCR is unavailable, native extraction remains usable and
+OCR-routed PDF pages are held in the review queue.
+
+## Empty state is normal
+
+An operator may intentionally install the service with zero sources. `no_enabled_sources` means no
+source has been enabled; it is not an initialization or MCP failure. Ask the operator whether they
+want to register a local folder or a specific Google Drive root, then give one copy-ready CLI command:
 
 ```bash
 local-rag-mcp source add-local notes /absolute/path/to/notes
 local-rag-mcp reconcile --source notes
 ```
 
-```bash
-local-rag-mcp auth-google --client-secret /secure/client.json \
-  --token-file ~/.local-rag/credentials/account.json
-local-rag-mcp source add-drive drive GOOGLE_DRIVE_FOLDER_ID --account account-label \
-  --token-file ~/.local-rag/credentials/account.json
-local-rag-mcp sync --source drive --full
-```
+For Drive, direct the operator to [setup.md](setup.md). Do not request, collect, echo, store, or
+transmit OAuth client secrets, OAuth tokens, remote embedding API keys, document contents, or source
+paths outside the configured local service.
 
-Use `search` without scope for global retrieval, or supply `source` and/or `folder` for strict
-filtering. Prefer hybrid; follow its warning when it falls back to full text. Use `read` with the
-returned `document_ref`, and preserve citation/provenance fields in answers.
+## Mutations and reviews
 
-When `doctor` reports embeddings unavailable, full-text search still works. The operator can enable
-local inference with `LOCAL_RAG_MCP_EMBEDDING_PROVIDER=local` and
-`LOCAL_RAG_MCP_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2`, or remote inference with
-`LOCAL_RAG_MCP_EMBEDDING_PROVIDER=openai`, `LOCAL_RAG_MCP_EMBEDDING_MODEL`,
-`LOCAL_RAG_MCP_OPENAI_BASE_URL`, and `LOCAL_RAG_MCP_OPENAI_API_KEY`. Never ask for the key value.
-When OCR is unavailable, continue using native extraction and tell the operator that OCR-routed PDF
-pages are in `reviews`; do not describe the whole index as unavailable.
+Reader tools do not mutate state. Reviewer actions require evidence plus actor identity. Admin
+actions can enqueue/reconcile/reindex and manage source lifecycle; source removal only purges derived
+local state and never authoritative source files.
 
-Reader tools do not mutate state. Reviewer tools require evidence and actor identity. Admin tools
-control reconcile/reindex and source lifecycle; removing a source deletes only derived index/cache
-state. OCR review corrections are additive and do not replace the base artifact.
+Index writes use a durable single-writer queue. Reader tools can inspect job/index status and search
+committed state while work runs. Admin agents should poll `job_status`; duplicate active work may
+coalesce and conflicting writes can be rejected.
 
-For a typical host, register `local-rag-mcp-server` as a stdio MCP command with
-`LOCAL_RAG_MCP_HOME=~/.local-rag` and `LOCAL_RAG_MCP_PROFILE=reader`. After reconnecting, verify an
-actual initialize, tool listing, and search call; persisted registration alone is not proof.
-
-Reader agents can call `index_status` and `job_status`. Progress contains source and aggregate counts
-but never target filenames or detailed file errors. Search responses also contain index status and
-continue returning committed results while indexing runs.
-
-Admin agents may call `start_reconcile` or `start_reindex` for background work and then poll
-`job_status`. Scope may be global, source, folder, or file; `reextract=true` is always explicit.
-Identical active requests coalesce, while conflicting writes are rejected. Installing or controlling
-the OS service remains an operator CLI action and is never required for MCP retrieval.
-
-Do not assume a background service inherits interactive embedding credentials. Its generated unit
-contains no secrets. If remote embeddings are needed, the operator must arrange a protected runtime
-environment; otherwise FTS remains the honest supported service behavior.
+The optional OS user service is an operator-controlled mechanism. Agents must never install,
+start, stop, or uninstall it without explicit operator direction. It does not inherit interactive
+remote-embedding credentials by default.

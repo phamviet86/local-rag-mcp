@@ -41,7 +41,7 @@ class LocalEmbeddings:
                     except ImportError as exc:
                         raise RuntimeError(
                             "install local embeddings with: "
-                            "pip install 'local-rag-mcp[local-embeddings]'"
+                            "pip install 'phamviet-local-rag-mcp[local-embeddings]'"
                         ) from exc
                     self._model = SentenceTransformer(self.model_name, cache_folder=self.cache_dir)
                 model = self._model
