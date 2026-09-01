@@ -5,6 +5,10 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+- Add copy-ready macOS/Linux checksum verification, Python/SQLite preflight, doctor-led
+  troubleshooting, and data-root-safe backup and restore guidance.
+- Document Google Drive OAuth prerequisites and add an isolated contributor/coding-agent bootstrap.
+
 ## [0.7.0] - 2026-09-01
 
 - Adopt the unique Python distribution name `phamviet-local-rag-mcp`; the repository, product, and

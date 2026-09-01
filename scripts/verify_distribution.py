@@ -13,6 +13,7 @@ REQUIRED_SDIST_FILES = {
     ".env.example",
     "AGENTS.md",
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "LICENSE",
     "MANIFEST.in",
     "README.md",

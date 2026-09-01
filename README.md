@@ -44,6 +44,11 @@ python -m pip install \
 local-rag-mcp --help
 ```
 
+For a higher-assurance installation, download and verify the wheel before installing it. The
+copy-ready macOS/Linux procedure, including the correct checksum command for each platform, is in
+[deployment](docs/deployment.md#verify-and-install-a-release-wheel). Do not treat a successful
+download alone as checksum verification.
+
 Optional capabilities are explicit. Add them from the same wheel with the unique distribution name:
 
 ```bash
@@ -130,6 +135,7 @@ providers.
 - [Operator setup](docs/setup.md)
 - [Deployment, upgrade, rollback, and uninstall](docs/deployment.md)
 - [Agent workflow](docs/agents.md)
+- [Contributor and coding-agent setup](CONTRIBUTING.md)
 - [Feature and command reference](docs/reference.md)
 - [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)

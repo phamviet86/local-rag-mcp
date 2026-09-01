@@ -22,6 +22,6 @@ counts but must not expose target filenames or detailed file errors. The optiona
 operator-managed and must never be installed implicitly by setup or an agent. See
 [docs/agents.md](docs/agents.md) for the retrieval and capability workflow.
 
-Run `ruff format --check .`, `ruff check .`, `mypy`, `pytest`, and
-`python -m compileall -q src tests scripts` before committing. Never commit secrets, publish, create
-a release, or push without explicit authority.
+For a coding checkout, use the isolated development bootstrap and change-validation sequence in
+[CONTRIBUTING.md](CONTRIBUTING.md). Never commit secrets, publish, create a release, or push without
+explicit authority.

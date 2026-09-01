@@ -39,6 +39,11 @@ local-rag-mcp setup --no-ocr
 local-rag-mcp doctor --json
 ```
 
+Nếu cần xác minh chặt chẽ hơn, hãy tải wheel và `SHA256SUMS` rồi kiểm checksum trước khi cài. Quy
+trình copy-paste riêng cho macOS và Linux nằm trong
+[docs/deployment.md](docs/deployment.md#verify-and-install-a-release-wheel); tải thành công không
+đồng nghĩa đã xác minh checksum.
+
 Extras cài từ cùng wheel release bằng distribution đúng:
 
 ```bash

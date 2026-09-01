@@ -11,15 +11,18 @@ The product and commands are `local-rag-mcp`, but its Python distribution is
 The default data root is `~/.local-rag`. It is created with owner-only permissions on POSIX and
 contains a database plus derived document text, so choose a protected local volume. To use a
 different data root, set `LOCAL_RAG_MCP_HOME` before every CLI/MCP invocation or pass `--home` to
-the CLI.
+the CLI. Choose one absolute `DATA_ROOT` and keep it identical for CLI, the optional service, and
+MCP registration; when using `--home`, put it before the subcommand.
 
 Choose exactly one setup mode:
 
 ```bash
-local-rag-mcp setup --no-ocr
+DATA_ROOT="$HOME/.local-rag"
+export LOCAL_RAG_MCP_HOME="$DATA_ROOT"
+local-rag-mcp --home "$DATA_ROOT" setup --no-ocr
 # Or: provision checksum-pinned local OCR runtime/model, requiring network during setup.
-local-rag-mcp setup --full
-local-rag-mcp doctor --json
+local-rag-mcp --home "$DATA_ROOT" setup --full
+local-rag-mcp --home "$DATA_ROOT" doctor --json
 ```
 
 `--no-ocr` supports Markdown, text, DOCX, XLSX, PPTX, native PDF text, FTS5, metadata, and
@@ -54,6 +57,14 @@ local-rag-mcp source add-local engineering /srv/engineering --exclude archive --
 
 Install the `google-drive` extra from the v0.7.0 release wheel when it is needed. OAuth provisioning
 happens only on the operator's machine and is intentionally unavailable through MCP.
+
+Before running the commands below, the operator must use a Google Cloud project to enable the Google
+Drive API, configure the OAuth consent screen, and create/download an OAuth **Desktop app** client.
+Follow Google's [Drive Python quickstart](https://developers.google.com/workspace/drive/api/quickstart/python)
+for those console steps and its [installed-app OAuth guidance](https://developers.google.com/identity/protocols/oauth2/native-app)
+for the desktop flow. Request only the read-only Drive scope required by this project. Store the
+downloaded client JSON and resulting token in a protected operator-controlled location; do not commit,
+attach, paste, or relay their contents to an agent.
 
 ```bash
 # v0.7.0 GitHub Release wheel
@@ -112,7 +123,7 @@ reader profile and matching data root:
 
 ```bash
 codex mcp add local-rag-mcp \
-  --env LOCAL_RAG_MCP_HOME="$HOME/.local-rag" \
+  --env LOCAL_RAG_MCP_HOME="$DATA_ROOT" \
   --env LOCAL_RAG_MCP_PROFILE=reader \
   -- "$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp-server"
 codex mcp get local-rag-mcp
@@ -132,11 +143,11 @@ Manual `reconcile`, `reindex`, CLI, and MCP retrieval do not need a background p
 native local watchers and periodic reconciliation, install one user service:
 
 ```bash
-local-rag-mcp service install
-local-rag-mcp service start
-local-rag-mcp service status
-local-rag-mcp service stop
-local-rag-mcp service uninstall
+local-rag-mcp --home "$DATA_ROOT" service install
+local-rag-mcp --home "$DATA_ROOT" service start
+local-rag-mcp --home "$DATA_ROOT" service status
+local-rag-mcp --home "$DATA_ROOT" service stop
+local-rag-mcp --home "$DATA_ROOT" service uninstall
 ```
 
 The service is a macOS LaunchAgent or Linux systemd user service. It watches enabled local roots and
@@ -148,11 +159,11 @@ remains supported.
 ## Day-two checks
 
 ```bash
-local-rag-mcp doctor --json
-local-rag-mcp status
-local-rag-mcp source list
-local-rag-mcp jobs list
-local-rag-mcp review list
+local-rag-mcp --home "$DATA_ROOT" doctor --json
+local-rag-mcp --home "$DATA_ROOT" status
+local-rag-mcp --home "$DATA_ROOT" source list
+local-rag-mcp --home "$DATA_ROOT" jobs list
+local-rag-mcp --home "$DATA_ROOT" review list
 ```
 
 Use `reindex --reextract` only when deliberately rerunning extraction/OCR. For failure recovery,

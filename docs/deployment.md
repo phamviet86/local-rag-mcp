@@ -29,22 +29,78 @@ Release. This project does not currently publish packages to PyPI.
 | Embeddings | Optional | Local model or remote endpoint is explicit; FTS works without either. |
 | Google Drive | Optional | Requires operator-created read-only OAuth credentials and `google-drive` when packaged separately. |
 
-## Install a release wheel
+## Preflight
 
-Install directly from the v0.7.0 GitHub Release; cloning the repository is not required. For a
-higher-assurance installation, download the wheel, compare its SHA-256 digest with `SHA256SUMS` on
-the [release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0), then install
-the verified local file instead.
+Run these checks before creating the virtual environment. They do not create project state. The
+SQLite check must print `FTS5 available`; if it fails, install a supported Python 3.11–3.13 build
+whose bundled SQLite has FTS5, then repeat the check. This project does not maintain operating-system
+package-manager instructions.
+
+```bash
+python3.11 --version
+python3.11 -m venv --help >/dev/null
+python3.11 - <<'PY'
+import sqlite3
+
+connection = sqlite3.connect(":memory:")
+connection.execute("CREATE VIRTUAL TABLE probe USING fts5(value)")
+print("FTS5 available")
+PY
+```
+
+## Verify and install a release wheel
+
+Create a dedicated production environment first; cloning the repository is not required. Then choose
+either the convenient direct URL install or the recommended verified local-file install. For the
+latter, download the wheel, compare its SHA-256 digest with `SHA256SUMS` on the
+[release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0), then install the
+verified local file.
 
 ```bash
 mkdir -p "$HOME/.local/share/local-rag-mcp"
 python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
 python -m pip install --upgrade pip
+```
+
+### Direct URL install
+
+```bash
 python -m pip install \
   "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0/phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
 local-rag-mcp --help
 ```
+
+To verify the exact v0.7.0 wheel on a supported platform, download only the named wheel and the
+checksum manifest, then validate the wheel entry. `shasum` is used on macOS and `sha256sum` on Linux;
+both commands must print `OK` before installation.
+
+```bash
+RELEASE_URL="https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.0"
+WHEEL="phamviet_local_rag_mcp-0.7.0-py3-none-any.whl"
+mkdir -p "$HOME/Downloads/local-rag-mcp-v0.7.0"
+cd "$HOME/Downloads/local-rag-mcp-v0.7.0"
+curl -fL -O "$RELEASE_URL/$WHEEL"
+curl -fL -O "$RELEASE_URL/SHA256SUMS"
+grep -F "  $WHEEL" SHA256SUMS > "$WHEEL.sha256"
+test -s "$WHEEL.sha256"
+
+case "$(uname -s)" in
+  Darwin) shasum -a 256 -c "$WHEEL.sha256" ;;
+  Linux)  sha256sum -c "$WHEEL.sha256" ;;
+  *) echo "Unsupported release target; see the support matrix."; exit 1 ;;
+esac
+rm -f "$WHEEL.sha256"
+
+. "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
+python -m pip install "$WHEEL"
+local-rag-mcp --version
+```
+
+The v0.7.0 expected wheel digest is
+`0690826737554b2f7a2b9c2fa0c81e80979742c0a58cc95706af4497653536fa`; use the manifest from the
+release as the source of truth. Do not use `pip install local-rag-mcp` or a checksum copied from an
+untrusted issue, chat, or mirror.
 
 Install wheel extras directly from the same release wheel:
 
@@ -62,14 +118,16 @@ package is unrelated to this project.
 
 Initialize a separate data root before starting the MCP server. The default is `~/.local-rag`; use a
 different absolute path when home directories are ephemeral or when data must live on an encrypted
-volume.
+volume. Set one `DATA_ROOT` value and use it consistently for CLI, optional service, and MCP
+registration. The `--home` option belongs before the subcommand.
 
 ```bash
-local-rag-mcp setup --no-ocr
-local-rag-mcp doctor --json
+DATA_ROOT="$HOME/.local-rag"
+local-rag-mcp --home "$DATA_ROOT" setup --no-ocr
+local-rag-mcp --home "$DATA_ROOT" doctor --json
 
 codex mcp add local-rag-mcp \
-  --env LOCAL_RAG_MCP_HOME="$HOME/.local-rag" \
+  --env LOCAL_RAG_MCP_HOME="$DATA_ROOT" \
   --env LOCAL_RAG_MCP_PROFILE=reader \
   -- "$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp-server"
 codex mcp get local-rag-mcp
@@ -79,27 +137,52 @@ Restart/reconnect the host and make an MCP `doctor`, `sources`, and `search` cal
 `no_enabled_sources` is the expected search response. Add a source only after the owner identifies
 it; see [setup.md](setup.md).
 
+## Troubleshooting from `doctor`
+
+Start every diagnosis with `local-rag-mcp --home "$DATA_ROOT" doctor --json`. Exit code `2` signals
+a blocked readiness condition or command error; `doctor` can report a non-blocking `degraded` state
+with exit code `0`. Use its structured `checks` and `actions` instead of guessing. An initialized
+zero-source state is expected: it returns
+`no_enabled_sources` until an operator deliberately adds and reconciles a source.
+
+| Symptom | Safe next action |
+| --- | --- |
+| `python3.11` or `venv` is missing | Install a supported Python 3.11–3.13 build using the platform's maintained channel, then rerun [Preflight](#preflight). Do not substitute an unsupported interpreter. |
+| The FTS5 preflight or `doctor` database check fails | Use a supported Python build with SQLite FTS5, restore a known-good data-root backup if integrity failed, then run `local-rag-mcp --home "$DATA_ROOT" doctor --json`. Do not delete the data root as a first response. |
+| Checksum command does not print `OK` | Delete the downloaded wheel and manifest, fetch both again from the official release, and stop if the digest still differs. Do not install that artifact. |
+| MCP cannot initialize or sees the wrong index | Confirm the MCP registration's absolute executable and `LOCAL_RAG_MCP_HOME` equal the CLI's environment and `DATA_ROOT`; run `codex mcp get local-rag-mcp`, reconnect the host, then call MCP `doctor`, `sources`, and `search`. |
+| Optional service cannot start or misses updates | Run `local-rag-mcp --home "$DATA_ROOT" service status`. Inspect the platform's per-user service logs (LaunchAgent on macOS; `journalctl --user` for the systemd unit on Linux), then use manual reconcile while investigating. The service is optional. |
+| Drive authentication/sync fails | Recheck that the Drive API, consent screen, and Desktop OAuth client were created by the operator; rerun `auth-google` locally and inspect `doctor`/sync errors without revealing token or client-secret contents. |
+| OCR or embeddings are unavailable | `--no-ocr` and full-text search are supported degraded modes. For OCR, rerun `setup --full` only with an approved network. For embeddings, confirm the selected optional package/provider and rerun `reindex --all`; never paste provider keys into chat or the repository. |
+
 ## Backup and migrate state
 
 Stop optional indexing before copying state so the snapshot is consistent:
 
 ```bash
-local-rag-mcp service stop
+DATA_ROOT="/absolute/path/to/.local-rag"
+ARCHIVE="$HOME/local-rag-backups/local-rag-$(date +%Y%m%d).tgz"
+local-rag-mcp --home "$DATA_ROOT" service stop
 mkdir -p "$HOME/local-rag-backups"
-tar -C "$HOME" -czf "$HOME/local-rag-backups/local-rag-$(date +%Y%m%d).tgz" .local-rag
-local-rag-mcp service start
+tar -C "$DATA_ROOT" -czf "$ARCHIVE" .
+local-rag-mcp --home "$DATA_ROOT" service start
 ```
 
 If the optional service was never installed, omit the first and last commands. Protect backups like
 the live data root: they can contain extracted document text, OCR corrections, Drive cache bytes,
 and token-path metadata. Do not put them in the repository or a public artifact store.
 
-To move the state to another machine, copy the archive through an approved protected channel, extract
-it under the target user's home (or selected `LOCAL_RAG_MCP_HOME`), then run:
+To move the state to another machine, copy the archive through an approved protected channel, create
+the target root, and extract into that same root. Use the target's `DATA_ROOT` for every subsequent
+CLI, service, and MCP command:
 
 ```bash
-local-rag-mcp doctor --json
-local-rag-mcp source list
+DATA_ROOT="/absolute/path/to/.local-rag"
+ARCHIVE="/approved/path/local-rag-YYYYMMDD.tgz"
+mkdir -p "$DATA_ROOT"
+tar -C "$DATA_ROOT" -xzf "$ARCHIVE"
+local-rag-mcp --home "$DATA_ROOT" doctor --json
+local-rag-mcp --home "$DATA_ROOT" source list
 ```
 
 Local source paths must exist and be readable on the destination. Drive token files may need to be
@@ -113,15 +196,16 @@ have verified search and reads on the destination.
 2. Stop the optional service and make a backup.
 3. Download and checksum-verify the new release wheel.
 4. Install the new wheel into the same isolated environment.
-5. Run `local-rag-mcp doctor --json`, `source list`, and a representative `search`/`read` check.
+5. Run `local-rag-mcp --home "$DATA_ROOT" doctor --json`, `source list`, and a representative `search`/`read` check.
 6. Restart the optional service only after those checks pass.
 
 ```bash
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
-local-rag-mcp service stop
+DATA_ROOT="/absolute/path/to/.local-rag"
+local-rag-mcp --home "$DATA_ROOT" service stop
 python -m pip install --upgrade "$HOME/Downloads/phamviet_local_rag_mcp-NEW_VERSION-py3-none-any.whl"
-local-rag-mcp doctor --json
-local-rag-mcp service start
+local-rag-mcp --home "$DATA_ROOT" doctor --json
+local-rag-mcp --home "$DATA_ROOT" service start
 ```
 
 For a failed upgrade, stop the service, reinstall the previously verified wheel, and restore the
