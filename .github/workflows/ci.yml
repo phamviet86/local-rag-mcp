@@ -76,7 +76,7 @@ jobs:
       - name: Verify release artifact contents
         run: >-
           python scripts/verify_distribution.py --dist-dir dist
-          --distribution phamviet-local-rag-mcp --version 0.7.0
+          --distribution phamviet-local-rag-mcp --version 0.7.1
       - name: Install wheel in a fresh virtual environment
         shell: bash
         run: |
@@ -84,7 +84,7 @@ jobs:
           "$RUNNER_TEMP/local-rag-mcp-wheel/bin/python" -m pip install --upgrade pip
           "$RUNNER_TEMP/local-rag-mcp-wheel/bin/pip" install dist/*.whl
           "$RUNNER_TEMP/local-rag-mcp-wheel/bin/pip" check
-          test "$("$RUNNER_TEMP/local-rag-mcp-wheel/bin/local-rag-mcp" --version)" = "local-rag-mcp 0.7.0"
+          test "$("$RUNNER_TEMP/local-rag-mcp-wheel/bin/local-rag-mcp" --version)" = "local-rag-mcp 0.7.1"
           "$RUNNER_TEMP/local-rag-mcp-wheel/bin/local-rag-mcp" --help >/dev/null
           "$RUNNER_TEMP/local-rag-mcp-wheel/bin/local-rag-mcp" mcp --help >/dev/null
       - name: Verify fresh no-OCR and zero-source behavior

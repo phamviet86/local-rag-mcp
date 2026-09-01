@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phamviet-local-rag-mcp"
-version = "0.7.0"
+version = "0.7.1"
 description = "Local-first multi-source document indexing and MCP retrieval"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"

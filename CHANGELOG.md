@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-01
+
 - Add copy-ready macOS/Linux checksum verification, Python/SQLite preflight, doctor-led
   troubleshooting, and data-root-safe backup and restore guidance.
 - Document Google Drive OAuth prerequisites and add an isolated contributor/coding-agent bootstrap.
@@ -18,4 +20,5 @@ All notable changes to this project are documented in this file. This project fo
 - Add an Apache-2.0 license and release metadata.
 - Strengthen release verification for built distributions and clean-environment installation.
 
+[0.7.1]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.1
 [0.7.0]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0
