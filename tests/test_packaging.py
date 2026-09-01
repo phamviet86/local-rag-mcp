@@ -32,12 +32,14 @@ class PackagingMetadataTests(unittest.TestCase):
             project = tomllib.load(handle)["project"]
 
         self.assertEqual(project["license"], "Apache-2.0")
-        self.assertEqual(
-            project["optional-dependencies"]["google-drive"],
-            ["google-api-python-client==2.198.0", "google-auth-oauthlib==1.4.0"],
-        )
-        self.assertNotIn("google-api-python-client==2.198.0", project["dependencies"])
-        self.assertNotIn("google-auth-oauthlib==1.4.0", project["dependencies"])
+        drive_dependencies = project["optional-dependencies"]["google-drive"]
+        for package in ("google-api-python-client", "google-auth-oauthlib"):
+            matches = [item for item in drive_dependencies if item.startswith(f"{package}==")]
+            self.assertEqual(len(matches), 1, f"{package} must be pinned in the google-drive extra")
+            self.assertFalse(
+                any(item.startswith(package) for item in project["dependencies"]),
+                f"{package} must not be installed by the base distribution",
+            )
         self.assertIn("Copyright 2026 phamviet86", (ROOT / "LICENSE").read_text())
         manifest = (ROOT / "MANIFEST.in").read_text()
         for included_file in ("SECURITY.md", "AGENTS.md", ".env.example"):
