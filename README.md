@@ -8,8 +8,8 @@ It is a standalone service: use its CLI or MCP server, not its internal Python m
 
 ## Release status and identity
 
-**v0.7.1** was released on 2026-09-01. Download its wheel and source archive only from the
-[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.1); this project does
+**v0.8.0** was released on 2026-09-05. Download its wheel and source archive only from the
+[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.8.0); this project does
 not currently publish packages to PyPI.
 
 | Purpose | Name |
@@ -30,8 +30,8 @@ Python **3.11–3.13** and SQLite with FTS5 are supported. See the
 
 ## Install a published GitHub Release
 
-Install the v0.7.1 release wheel into a dedicated production virtual environment; cloning the
-repository is not required. The [release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.1)
+Install the v0.8.0 release wheel into a dedicated production virtual environment; cloning the
+repository is not required. The [release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.8.0)
 also publishes SHA-256 checksums for its assets.
 
 ```bash
@@ -40,7 +40,7 @@ python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.1/phamviet_local_rag_mcp-0.7.1-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
 local-rag-mcp --help
 ```
 
@@ -54,11 +54,11 @@ Optional capabilities are explicit. Add them from the same wheel with the unique
 ```bash
 # Local embedding model support
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.1/phamviet_local_rag_mcp-0.7.1-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
 
 # Google Drive source support
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.1/phamviet_local_rag_mcp-0.7.1-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
 ```
 
 Do not substitute `local-rag-mcp[...]` in either installation method: that PyPI name is unrelated

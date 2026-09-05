@@ -2,8 +2,8 @@
 
 ## Release status
 
-The public [v0.7.1 GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.1)
-was published on 2026-09-01. Its Python distribution is `phamviet-local-rag-mcp`; this project does
+The public [v0.8.0 GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.8.0)
+was published on 2026-09-05. Its Python distribution is `phamviet-local-rag-mcp`; this project does
 not currently publish to PyPI. The existing PyPI project named `local-rag-mcp` is unrelated. Do not
 install, report vulnerabilities to, or infer support status from that other project.
 

@@ -1,8 +1,8 @@
 # Deployment and lifecycle
 
 This guide is the release path for macOS and Linux machines that should use `local-rag-mcp` normally.
-It assumes a trusted local user and a released wheel. **v0.7.1** was released on 2026-09-01; use the
-[v0.7.1 GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.1) for its
+It assumes a trusted local user and a released wheel. **v0.8.0** was released on 2026-09-05; use the
+[v0.8.0 GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.8.0) for its
 wheel, source archive, and SHA-256 checksums.
 
 ## Distribution identity
@@ -53,7 +53,7 @@ PY
 Create a dedicated production environment first; cloning the repository is not required. Then choose
 either the convenient direct URL install or the recommended verified local-file install. For the
 latter, download the wheel, compare its SHA-256 digest with `SHA256SUMS` on the
-[release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.1), then install the
+[release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.8.0), then install the
 verified local file.
 
 ```bash
@@ -67,19 +67,19 @@ python -m pip install --upgrade pip
 
 ```bash
 python -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.1/phamviet_local_rag_mcp-0.7.1-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
 local-rag-mcp --help
 ```
 
-To verify the exact v0.7.1 wheel on a supported platform, download only the named wheel and the
+To verify the exact v0.8.0 wheel on a supported platform, download only the named wheel and the
 checksum manifest, then validate the wheel entry. `shasum` is used on macOS and `sha256sum` on Linux;
 both commands must print `OK` before installation.
 
 ```bash
-RELEASE_URL="https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.1"
-WHEEL="phamviet_local_rag_mcp-0.7.1-py3-none-any.whl"
-mkdir -p "$HOME/Downloads/local-rag-mcp-v0.7.1"
-cd "$HOME/Downloads/local-rag-mcp-v0.7.1"
+RELEASE_URL="https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0"
+WHEEL="phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
+mkdir -p "$HOME/Downloads/local-rag-mcp-v0.8.0"
+cd "$HOME/Downloads/local-rag-mcp-v0.8.0"
 curl -fL -O "$RELEASE_URL/$WHEEL"
 curl -fL -O "$RELEASE_URL/SHA256SUMS"
 grep -F "  $WHEEL" SHA256SUMS > "$WHEEL.sha256"
@@ -97,7 +97,7 @@ python -m pip install "$WHEEL"
 local-rag-mcp --version
 ```
 
-Use `SHA256SUMS` attached to the v0.7.1 release as the source of truth; do not hard-code a digest in
+Use `SHA256SUMS` attached to the v0.8.0 release as the source of truth; do not hard-code a digest in
 local deployment notes. Do not use `pip install local-rag-mcp` or a checksum copied from an untrusted
 issue, chat, or mirror.
 
@@ -105,9 +105,9 @@ Install wheel extras directly from the same release wheel:
 
 ```bash
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.1/phamviet_local_rag_mcp-0.7.1-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.1/phamviet_local_rag_mcp-0.7.1-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
 ```
 
 Extras may be combined if needed. Do not substitute `local-rag-mcp[...]` in any command: that PyPI
