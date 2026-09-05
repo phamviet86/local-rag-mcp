@@ -47,7 +47,7 @@ Changelog = "https://github.com/phamviet86/local-rag-mcp/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 google-drive = [
-  "google-api-python-client==2.198.0",
+  "google-api-python-client==2.199.0",
   "google-auth-oauthlib==1.4.0",
 ]
 local-embeddings = ["sentence-transformers>=3,<7"]
