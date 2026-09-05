@@ -8,7 +8,10 @@ GitHub Release; it does not currently publish packages to PyPI.
 
 Start with `doctor`, `status`, and `sources`. Search without scope is global across enabled sources;
 when a source or folder is supplied, treat it as strict. Cite returned source identity, path, URL,
-hash/revision, page, and locator. Use reader profile by default, reviewer only for evidenced
+hash/revision, page, and locator. Inspect search `coverage` even for zero matches; disclose failed/unindexed or stale files and unknown
+listing completeness. Use reader `index_coverage` with the same source/folder for paginated details.
+Drive folder scopes may use `id:<folder-id>` to distinguish duplicate names.
+Use reader profile by default, reviewer only for evidenced
 corrections/metadata, and admin only for operator-approved indexing or source changes.
 
 If no source exists, ask the operator to choose a local folder or a Google Drive root/account.

@@ -245,6 +245,10 @@ class SearchEngine:
     def _relative_scope(self, scope: str | None) -> str | None:
         if not scope:
             return None
+        if scope.startswith("id:"):
+            if not scope[3:]:
+                raise ValueError("Drive ID scope must include a file or folder ID")
+            return scope
         candidate = Path(scope)
         if candidate.is_absolute() or ".." in candidate.parts:
             raise ValueError("folder scope must be a safe relative path")
@@ -301,6 +305,13 @@ def _filter_sql(scope: str | None, source: str | None) -> tuple[str, list[str]]:
     if source:
         clauses.append("AND (d.source_id=? OR s.name=?)")
         values.extend((source, source))
+    if scope and scope.startswith("id:"):
+        clauses.append(
+            "AND s.kind='google_drive' AND (d.external_id=? OR EXISTS "
+            "(SELECT 1 FROM json_each(d.metadata_json, '$.drive_ancestor_ids') WHERE value=?))"
+        )
+        values.extend((scope[3:], scope[3:]))
+        return " ".join(clauses), values
     scope_sql, scope_values = _scope_sql(scope, "d.relative_path")
     clauses.append(scope_sql)
     values.extend(scope_values)

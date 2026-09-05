@@ -458,6 +458,7 @@ class MultiSourceTests(unittest.TestCase):
                 "status",
                 "doctor",
                 "index_status",
+                "index_coverage",
                 "job_status",
                 "sources",
                 "metadata",

@@ -18,7 +18,9 @@ AGENT_INSTRUCTIONS = (
     "never request credential contents in chat. Source and OAuth setup use the local-rag-mcp CLI. "
     "Missing OCR routes affected PDF pages to durable review while other indexing continues. "
     "Missing "
-    "embeddings leaves full_text search available. Mutation tools require reviewer/admin profiles."
+    "embeddings leaves full_text search available. Always inspect search.coverage and report "
+    "failed/stale files or unknown coverage, including for zero matches; use index_coverage for "
+    "paginated details. Mutation tools require reviewer/admin profiles."
 )
 
 
@@ -44,6 +46,18 @@ READER_TOOLS = [
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
             },
             ["query"],
+        ),
+    },
+    {
+        "name": "index_coverage",
+        "description": "Read Drive coverage and paginated failed, stale or pending files.",
+        "inputSchema": _schema(
+            {
+                "source": {"type": "string"},
+                "folder": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            }
         ),
     },
     {
@@ -238,7 +252,8 @@ class MCPServer:
             self.tools = [
                 tool
                 for tool in self.tools
-                if tool["name"] not in {"sources", "doctor", "index_status", "job_status"}
+                if tool["name"]
+                not in {"sources", "doctor", "index_status", "job_status", "index_coverage"}
             ]
         self.allowed = {tool["name"] for tool in self.tools}
 
@@ -271,6 +286,13 @@ class MCPServer:
                 )
             return self.service.read(
                 values["path"], int(values.get("start", 0)), int(values.get("length", 12000))
+            )
+        if name == "index_coverage":
+            return self.service.index_coverage(
+                values.get("source"),
+                values.get("folder"),
+                int(values.get("offset", 0)),
+                int(values.get("limit", 10)),
             )
         if name == "status":
             return self.service.status()
@@ -450,6 +472,26 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             dispatcher.call(
                 "search",
                 {"query": query, "source": source, "folder": folder, "mode": mode, "limit": limit},
+            )
+        )
+
+    @server.tool(annotations=read_only)
+    def index_coverage(
+        source: str | None = None,
+        folder: str | None = None,
+        offset: int = 0,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Read scoped coverage and failed/stale/pending files; paginate with next_offset."""
+        return _dict_result(
+            dispatcher.call(
+                "index_coverage",
+                {
+                    "source": source,
+                    "folder": folder,
+                    "offset": offset,
+                    "limit": limit,
+                },
             )
         )
 

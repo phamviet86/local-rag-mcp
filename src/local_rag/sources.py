@@ -18,6 +18,7 @@ class SourceRecord:
     enabled: bool
     config: dict[str, Any]
     cursor: str | None = None
+    last_error: str | None = None
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> SourceRecord:
@@ -30,6 +31,7 @@ class SourceRecord:
             bool(value["enabled"]),
             dict(value.get("config", {})),
             value.get("cursor"),
+            value.get("last_error"),
         )
 
 

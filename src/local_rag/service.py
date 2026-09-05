@@ -357,6 +357,10 @@ class MultiSourceRAG:
                         backend.close()
                 reports.append(report)
             except Exception as exc:
+                if record.kind == "google_drive":
+                    from .coverage import source_failure
+
+                    source_failure(self.db, record.id, type(exc).__name__)
                 errors.append(f"{record.name}: {exc}")
         return {"sources": reports, "errors": errors}
 
@@ -385,7 +389,22 @@ class MultiSourceRAG:
             }
         result = self.search_engine.search(query, limit, folder, mode, source)
         result["index_status"] = self.index_status()
+        result["coverage"] = self.index_coverage(source, folder)
+        if result["coverage"]["notice"]:
+            result["warnings"].append(result["coverage"]["notice"])
         return result
+
+    def index_coverage(
+        self,
+        source: str | None = None,
+        folder: str | None = None,
+        offset: int = 0,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        from .coverage import index_coverage
+
+        normalized = self.search_engine._relative_scope(folder)
+        return index_coverage(self.db, source, normalized, offset, limit)
 
     def read(
         self,
