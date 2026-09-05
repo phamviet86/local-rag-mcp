@@ -139,3 +139,5 @@ providers.
 - [Feature and command reference](docs/reference.md)
 - [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
+
+See [Drive sync identity, retries, coverage and isolated trial](docs/drive-sync.md).

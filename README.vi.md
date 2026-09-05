@@ -83,3 +83,5 @@ codex mcp get local-rag-mcp
 Kết nối lại Codex rồi kiểm tra `doctor`, `sources`, `search`. Chỉ cấp profile `reviewer` hoặc `admin`
 cho tiến trình local đáng tin cậy. Đọc [docs/agents.md](docs/agents.md) và
 [SECURITY.md](SECURITY.md) trước khi cho agent truy cập dữ liệu.
+
+See [Drive sync identity, retries, coverage and isolated trial](docs/drive-sync.md).
