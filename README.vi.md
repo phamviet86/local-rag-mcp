@@ -8,8 +8,8 @@ README tiếng Anh là tài liệu chuẩn: [README.md](README.md).
 
 ## Trạng thái phát hành
 
-**v0.7.1** đã phát hành ngày 2026-09-01. Tải wheel và source archive duy nhất từ
-[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.1); hiện dự án chưa
+**v0.8.0** đã phát hành ngày 2026-09-05. Tải wheel và source archive duy nhất từ
+[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.8.0); hiện dự án chưa
 phát hành package lên PyPI.
 
 | Mục đích | Tên |
@@ -25,8 +25,8 @@ Dự án dùng license [Apache-2.0](LICENSE), độc lập và không liên kế
 
 ## Cài trên máy khác
 
-Cài trực tiếp wheel v0.7.1 vào virtual environment riêng (Python 3.11–3.13); không cần clone mã
-nguồn. [Trang release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.1) công bố
+Cài trực tiếp wheel v0.8.0 vào virtual environment riêng (Python 3.11–3.13); không cần clone mã
+nguồn. [Trang release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.8.0) công bố
 SHA-256 cho từng artifact:
 
 ```bash
@@ -34,7 +34,7 @@ mkdir -p "$HOME/.local/share/local-rag-mcp"
 python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
 python -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.1/phamviet_local_rag_mcp-0.7.1-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
 local-rag-mcp setup --no-ocr
 local-rag-mcp doctor --json
 ```
@@ -48,9 +48,9 @@ Extras cài từ cùng wheel release bằng distribution đúng:
 
 ```bash
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.1/phamviet_local_rag_mcp-0.7.1-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.7.1/phamviet_local_rag_mcp-0.7.1-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
 ```
 
 `setup --full` tải và kiểm tra runtime OCR local; `setup --no-ocr` vẫn hỗ trợ text/Office/native PDF

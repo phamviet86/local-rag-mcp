@@ -32,7 +32,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist-dir", type=Path, default=Path("dist"))
     parser.add_argument("--distribution", default="phamviet-local-rag-mcp")
-    parser.add_argument("--version", default="0.7.1")
+    parser.add_argument("--version", default="0.8.0")
     return parser
 
 

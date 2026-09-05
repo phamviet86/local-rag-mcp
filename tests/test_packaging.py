@@ -16,7 +16,7 @@ class PackagingMetadataTests(unittest.TestCase):
             project = tomllib.load(handle)["project"]
 
         self.assertEqual(project["name"], "phamviet-local-rag-mcp")
-        self.assertEqual(project["version"], "0.7.1")
+        self.assertEqual(project["version"], "0.8.0")
         self.assertEqual(project["version"], local_rag.__version__)
         self.assertEqual(local_rag_mcp.__version__, local_rag.__version__)
         self.assertEqual(
