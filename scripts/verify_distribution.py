@@ -25,6 +25,14 @@ REQUIRED_SDIST_FILES = {
     "docs/reference.md",
     "docs/setup.md",
     "pyproject.toml",
+    "scripts/verify_agent_install.py",
+    "scripts/verify_distribution.py",
+    "scripts/verify_mcp_stdio.py",
+}
+REQUIRED_SKILL_FILES = {
+    "local_rag/skills/local-rag-setup/SKILL.md",
+    "local_rag/skills/local-rag-setup/references/integrations.md",
+    "local_rag/skills/local-rag/SKILL.md",
 }
 
 
@@ -32,7 +40,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist-dir", type=Path, default=Path("dist"))
     parser.add_argument("--distribution", default="phamviet-local-rag-mcp")
-    parser.add_argument("--version", default="0.8.0")
+    parser.add_argument("--version", default="0.9.0")
     return parser
 
 
@@ -55,7 +63,9 @@ def main() -> int:
     if not wheel.is_file() or not sdist.is_file():
         raise SystemExit(f"expected one wheel and one sdist named {stem} in {args.dist_dir}")
 
-    missing = REQUIRED_SDIST_FILES - _sdist_files(sdist, stem)
+    missing = (
+        REQUIRED_SDIST_FILES | {f"src/{path}" for path in REQUIRED_SKILL_FILES}
+    ) - _sdist_files(sdist, stem)
     if missing:
         raise SystemExit(f"sdist is missing release files: {sorted(missing)}")
 
@@ -64,7 +74,7 @@ def main() -> int:
         entry_points_path = f"{stem}.dist-info/entry_points.txt"
         license_path = f"{stem}.dist-info/licenses/LICENSE"
         names = set(archive.namelist())
-        required_wheel = {metadata_path, entry_points_path, license_path}
+        required_wheel = {metadata_path, entry_points_path, license_path} | REQUIRED_SKILL_FILES
         if missing := required_wheel - names:
             raise SystemExit(f"wheel is missing required metadata: {sorted(missing)}")
         metadata = email.message_from_bytes(archive.read(metadata_path))

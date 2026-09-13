@@ -8,8 +8,8 @@ It is a standalone service: use its CLI or MCP server, not its internal Python m
 
 ## Release status and identity
 
-**v0.8.0** was released on 2026-09-05. Download its wheel and source archive only from the
-[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.8.0); this project does
+**v0.9.0** adds agent setup and retrieval skills. Download its wheel and source archive only from the
+[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.9.0); this project does
 not currently publish packages to PyPI.
 
 | Purpose | Name |
@@ -28,10 +28,51 @@ not affiliated with any similarly named PyPI project.
 Python **3.11–3.13** and SQLite with FTS5 are supported. See the
 [support matrix](docs/deployment.md#support-matrix) before deploying it to another machine.
 
-## Install a published GitHub Release
+## Install with an agent
 
-Install the v0.8.0 release wheel into a dedicated production virtual environment; cloning the
-repository is not required. The [release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.8.0)
+Give your workstation agent this README and ask it to install and configure the service. The agent
+should inspect an existing installation first, retain the requested sources/settings, install the
+package and its two skills, then read the installed `local-rag-setup/SKILL.md` and execute it. The
+operator only supplies required missing source/account details and completes local OAuth or secret
+entry. Normal setup does not require an API key: native text extraction and full-text search work
+without optional integrations.
+
+On macOS/Linux with Python 3.11–3.13, install the v0.9.0 release wheel into a dedicated environment;
+cloning the repository is unnecessary. Reuse an intended existing environment. The release also
+includes `SHA256SUMS`; the [verified download procedure](docs/deployment.md#verify-and-install-a-release-wheel)
+checks it before installation when required.
+
+```bash
+python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
+"$HOME/.local/share/local-rag-mcp/.venv/bin/python" -m pip install \
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.9.0/phamviet_local_rag_mcp-0.9.0-py3-none-any.whl"
+"$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp" install-skills
+```
+
+The installer reports absolute paths for **local-rag-setup** (configuration and verification) and
+**local-rag** (retrieval and citations). Read those files immediately to continue setup; reload the
+agent client when required for automatic skill discovery. The default skills root is
+`$CODEX_HOME/skills` when set, otherwise `~/.agents/skills`. Use `--dest /absolute/skills/root` for
+another supported client/scope. `--dry-run` previews without writes, `--check` verifies the installed
+content, and `--replace` updates differing skills previously managed by this installer. Unchanged
+installs do nothing; unrelated skills and client configuration are preserved. Unmanaged same-name or
+symlinked folders are refused, even with `--replace`.
+
+Each installed skill includes a generated nonsecret runtime reference with absolute executables and
+its installation source, so it works outside the checkout even when the environment is not on PATH.
+Use the same selected source/wheel when adding optional extras. After an environment move or package
+upgrade, rerun `install-skills --replace`. No MCP registration, source changes, indexing, or service
+installation occurs merely by copying skills: the setup agent completes the authorized workflow.
+
+For example, tell the agent: “Install this repository on this workstation, install its skills, then
+configure retrieval for this local folder [path] / Google Drive folder [ID]. Keep existing settings
+and ask only for required missing information.” It should verify real MCP search/read, or report
+that a client reconnect is still required. See [setup](docs/setup.md) for the operational contract.
+
+## Manual installation and optional integrations
+
+Install the v0.9.0 release wheel into a dedicated production virtual environment; cloning the
+repository is not required. The [release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.9.0)
 also publishes SHA-256 checksums for its assets.
 
 ```bash
@@ -40,8 +81,9 @@ python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.9.0/phamviet_local_rag_mcp-0.9.0-py3-none-any.whl"
 local-rag-mcp --help
+local-rag-mcp install-skills
 ```
 
 For a higher-assurance installation, download and verify the wheel before installing it. The
@@ -54,11 +96,11 @@ Optional capabilities are explicit. Add them from the same wheel with the unique
 ```bash
 # Local embedding model support
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.9.0/phamviet_local_rag_mcp-0.9.0-py3-none-any.whl"
 
 # Google Drive source support
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.8.0/phamviet_local_rag_mcp-0.8.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.9.0/phamviet_local_rag_mcp-0.9.0-py3-none-any.whl"
 ```
 
 Do not substitute `local-rag-mcp[...]` in either installation method: that PyPI name is unrelated
@@ -66,6 +108,9 @@ to this project.
 
 For a checkout used to contribute code, follow the development instructions in
 [AGENTS.md](AGENTS.md); editable installs are not the production deployment path.
+The previous v0.8.0 assets lack `install-skills`; their original behavior and validation remain in
+[historical release notes](docs/releases/v0.8.0.md). See [v0.9.0 release notes](docs/releases/v0.9.0.md)
+for upgrade and compatibility details.
 
 ## First-time operator setup
 

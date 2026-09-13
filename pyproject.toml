@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phamviet-local-rag-mcp"
-version = "0.8.0"
+version = "0.9.0"
 description = "Local-first multi-source document indexing and MCP retrieval"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -69,7 +69,7 @@ local-rag = "local_rag.cli:legacy_entrypoint"
 where = ["src"]
 
 [tool.setuptools.package-data]
-local_rag = ["py.typed"]
+local_rag = ["py.typed", "skills/*/SKILL.md", "skills/*/references/*.md"]
 local_rag_mcp = ["py.typed"]
 
 [tool.ruff]

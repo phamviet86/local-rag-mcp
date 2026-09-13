@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +11,32 @@ SUPPORTED_EXTENSIONS = frozenset({".txt", ".md", ".markdown", ".pdf", ".docx", "
 DEFAULT_EXCLUSIONS = frozenset(
     {".git", ".hg", ".svn", ".venv", "__pycache__", "node_modules", "$RECYCLE.BIN"}
 )
+
+
+def embedding_file_settings(home: Path) -> dict[str, str]:
+    """Read operator-created persistent settings without leaking credential contents."""
+    configured = os.environ.get("LOCAL_RAG_MCP_EMBEDDING_CONFIG")
+    path = Path(configured).expanduser() if configured else home / "credentials/embeddings.json"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        if not configured:
+            return {}
+        raise ValueError("configured embedding credentials file is missing") from None
+    if not stat.S_ISREG(info.st_mode) or (
+        os.name != "nt" and (info.st_mode & 0o077 or info.st_uid != os.getuid())
+    ):
+        raise ValueError("embedding credentials must be an owner-only regular file (chmod 600)")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise ValueError("cannot read valid embedding credentials JSON; contents omitted") from None
+    allowed = {"embedding_provider", "embedding_model", "openai_base_url", "openai_api_key"}
+    if not isinstance(payload, dict) or not all(
+        key in allowed and isinstance(value, str) for key, value in payload.items()
+    ):
+        raise ValueError("embedding credentials need supported string fields; contents omitted")
+    return payload
 
 
 def default_home() -> Path:
@@ -113,6 +140,7 @@ class Settings:
                 "'local-rag-mcp setup --no-ocr'"
             )
         payload = json.loads(path.read_text(encoding="utf-8"))
+        embedding = embedding_file_settings(data_home)
         return cls(
             root=Path(payload["root"]),
             home=data_home,
@@ -123,18 +151,24 @@ class Settings:
             reconcile_seconds=float(payload.get("reconcile_seconds", 600)),
             embedding_provider=os.environ.get("LOCAL_RAG_MCP_EMBEDDING_PROVIDER")
             or os.environ.get(
-                "LOCAL_RAG_EMBEDDING_PROVIDER", payload.get("embedding_provider", "none")
+                "LOCAL_RAG_EMBEDDING_PROVIDER",
+                embedding.get("embedding_provider", payload.get("embedding_provider", "none")),
             ),
             embedding_model=os.environ.get("LOCAL_RAG_MCP_EMBEDDING_MODEL")
             or os.environ.get("LOCAL_RAG_EMBEDDING_MODEL")
+            or embedding.get("embedding_model")
             or payload.get("embedding_model"),
             openai_base_url=os.environ.get("LOCAL_RAG_MCP_OPENAI_BASE_URL")
             or os.environ.get(
                 "LOCAL_RAG_OPENAI_BASE_URL",
-                payload.get("openai_base_url", "https://openrouter.ai/api/v1"),
+                embedding.get(
+                    "openai_base_url",
+                    payload.get("openai_base_url", "https://openrouter.ai/api/v1"),
+                ),
             ),
             openai_api_key=os.environ.get("LOCAL_RAG_MCP_OPENAI_API_KEY")
             or os.environ.get("LOCAL_RAG_OPENAI_API_KEY")
+            or embedding.get("openai_api_key")
             or None,
             ocr_mode=str(payload.get("ocr_mode", "unconfigured")),
         )

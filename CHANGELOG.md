@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-13
+
+- Bundle `local-rag-setup` and `local-rag` agent skills in wheel/sdist and install them with a
+  deterministic `install-skills` CLI, runtime discovery, read-only checks, and managed updates.
+- Add agent-first English/Vietnamese release-wheel onboarding and installation/upgrade instructions.
+- Load optional protected embedding settings from the data home for persistent CLI/MCP/service
+  configuration, with environment precedence and redacted validation errors.
+- Preserve MCP SDK version negotiation and structured results; report unavailable retrieval as tool
+  errors, unknown tools as invalid requests, and remote-capable search as open-world.
+- Verify wheel-installed skills and real SDK retrieval in macOS/Linux CI; publish v0.9.0 only from
+  the exact successful main CI commit carrying `[release v0.9.0]`.
+
 ## [0.8.0] - 2026-09-05
 
 - Support arbitrary Google Drive titles without using names as local storage paths; retain stable
@@ -36,5 +48,6 @@ All notable changes to this project are documented in this file. This project fo
 - Strengthen release verification for built distributions and clean-environment installation.
 
 [0.8.0]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.8.0
+[0.9.0]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.9.0
 [0.7.1]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.1
 [0.7.0]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0

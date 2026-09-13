@@ -23,6 +23,22 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
         "--home", type=Path, default=default_home(), help="shared data root (default ~/.local-rag)"
     )
     commands = result.add_subparsers(dest="command", required=True)
+    skills = commands.add_parser(
+        "install-skills", help="install bundled setup and retrieval skills"
+    )
+    skills.add_argument(
+        "--dest", type=Path, help="skills root (CODEX_HOME/skills or ~/.agents/skills)"
+    )
+    skill_mode = skills.add_mutually_exclusive_group()
+    skill_mode.add_argument(
+        "--check", action="store_true", help="check installed skills without writes"
+    )
+    skill_mode.add_argument(
+        "--dry-run", action="store_true", help="preview installation without writes"
+    )
+    skills.add_argument(
+        "--replace", action="store_true", help="replace different existing skill folders"
+    )
     initialize = commands.add_parser(
         "init", help="initialize storage and optionally migrate one legacy local root"
     )
@@ -162,6 +178,14 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if args.command == "install-skills":
+        from .skill_install import install_skills
+
+        report = install_skills(
+            args.dest, check=args.check, dry_run=args.dry_run, replace=args.replace
+        )
+        _print(report)
+        return 0 if report["ok"] else 2
     home = args.home.expanduser().resolve()
     if args.command in {"init", "setup"}:
         root = (args.root or home).expanduser().resolve()

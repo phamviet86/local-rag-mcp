@@ -4,7 +4,28 @@
 Python modules are not a public agent API. This guide supplements the repository-level contribution
 rules in [../AGENTS.md](../AGENTS.md).
 
+The v0.9.0 wheel includes two installable skills: `local-rag-setup` for configuration/repair and
+`local-rag` for retrieval. Run the installed `local-rag-mcp install-skills` and read the absolute
+skill paths it reports; use the release-wheel installation in [README.md](../README.md) first.
+No repository access is needed after installation.
+Skills contain generated nonsecret runtime paths so the CLI need not be on PATH. They do not create
+tools: check the client's actual loaded MCP tools and report any reconnect needed.
+
+Use existing inputs and authorization; complete routine setup steps yourself. Request only the
+missing source/account/file reference needed for the selected workflow. Keep API keys and OAuth
+token contents out of chat, using local protected input instead. OCR, embeddings, and a background
+service are optional; full-text search is a useful default.
+
 ## Connect safely
+
+The production stdio server uses the MCP Python SDK's native version negotiation. Verification covers
+modern `2026-07-28` discovery/per-request metadata and legacy `2025-11-25` initialization, typed tool
+schemas, structured content with text, tool execution errors, and JSON-RPC errors for unknown tools.
+Search and indexing advertise open-world behavior because selected Drive/embedding integrations can
+contact external services. See the official [stdio transport contract](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports),
+[modern tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools), and
+[legacy tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools).
+This is evidence for the tested stdio flows, not certification for every client or optional extension.
 
 Use the narrowest MCP profile. A normal retrieval agent gets `reader`:
 
