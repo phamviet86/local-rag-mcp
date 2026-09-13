@@ -12,6 +12,8 @@ from pathlib import Path
 from stat import S_IMODE
 from unittest.mock import patch
 
+import anyio
+
 import local_rag_mcp
 from local_rag.cli import main
 from local_rag.config import Settings
@@ -419,39 +421,13 @@ class MultiSourceTests(unittest.TestCase):
         return json.loads(output.getvalue())
 
     def test_sdk_registration_uses_profile_specific_typed_tools(self):
-        class FakeAnnotations:
-            def __init__(self, **values):
-                self.values = values
-
-        class FakeSDK:
-            def __init__(self, *args, **kwargs):
-                self.registered = {}
-
-            def tool(self, annotations=None):
-                def decorate(function):
-                    self.registered[function.__name__] = function
-                    return function
-
-                return decorate
-
-        mcp_module = types.ModuleType("mcp")
-        server_module = types.ModuleType("mcp.server")
-        mcpserver_module = types.ModuleType("mcp.server.mcpserver")
-        types_module = types.ModuleType("mcp.types")
-        mcpserver_module.MCPServer = FakeSDK
-        types_module.ToolAnnotations = FakeAnnotations
-        modules = {
-            "mcp": mcp_module,
-            "mcp.server": server_module,
-            "mcp.server.mcpserver": mcpserver_module,
-            "mcp.types": types_module,
-        }
         service = MultiSourceRAG(self.settings)
-        with patch.dict(sys.modules, modules):
-            reader = create_sdk_server(service, "reader")
-            admin = create_sdk_server(service, "admin")
+        reader_server = create_sdk_server(service, "reader")
+        admin_server = create_sdk_server(service, "admin")
+        reader = {tool.name: tool for tool in anyio.run(reader_server.list_tools)}
+        admin = {tool.name: tool for tool in anyio.run(admin_server.list_tools)}
         self.assertEqual(
-            set(reader.registered),
+            set(reader),
             {
                 "search",
                 "read",
@@ -465,10 +441,13 @@ class MultiSourceTests(unittest.TestCase):
                 "reviews",
             },
         )
-        self.assertIn("correct_page", admin.registered)
-        self.assertIn("remove_source", admin.registered)
-        self.assertIn("start_reconcile", admin.registered)
-        self.assertIn("start_reindex", admin.registered)
+        self.assertIn("correct_page", admin)
+        self.assertIn("remove_source", admin)
+        self.assertTrue(admin["remove_source"].annotations.destructive_hint)
+        self.assertFalse(admin["correct_page"].annotations.open_world_hint)
+        for name in ("start_reconcile", "start_reindex", "reconcile", "reindex"):
+            self.assertTrue(admin[name].annotations.open_world_hint)
+            self.assertEqual(admin[name].input_schema["type"], "object")
 
 
 if __name__ == "__main__":

@@ -439,12 +439,42 @@ class MCPServer:
 
 def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
     try:
+        from mcp.server.mcpserver import Context
         from mcp.server.mcpserver import MCPServer as SDKServer
-        from mcp.types import ToolAnnotations
+        from mcp.shared.exceptions import MCPError
+        from mcp.types import INVALID_PARAMS, CallToolResult, InputRequiredResult, ToolAnnotations
     except ImportError as exc:
-        raise RuntimeError("MCP SDK is not installed; install local-rag-mcp") from exc
+        raise RuntimeError("MCP SDK is not installed; reinstall phamviet-local-rag-mcp") from exc
+
+    class LocalRAGSDKServer(SDKServer[Any]):
+        async def call_tool(
+            self,
+            name: str,
+            arguments: dict[str, Any],
+            context: Context[Any, Any] | None = None,
+        ) -> CallToolResult | InputRequiredResult:
+            if name not in {tool.name for tool in await self.list_tools()}:
+                raise MCPError(code=INVALID_PARAMS, message=f"Unknown tool: {name}")
+            result = await super().call_tool(name, arguments, context)
+            observations = {
+                "doctor",
+                "status",
+                "sources",
+                "index_status",
+                "job_status",
+                "index_coverage",
+            }
+            if (
+                isinstance(result, CallToolResult)
+                and name not in observations
+                and isinstance(result.structured_content, dict)
+                and result.structured_content.get("error")
+            ):
+                result.is_error = True
+            return result
+
     dispatcher = MCPServer(service, profile)
-    server = SDKServer(
+    server = LocalRAGSDKServer(
         "local-rag-mcp",
         version=__version__,
         instructions=AGENT_INSTRUCTIONS,
@@ -452,14 +482,20 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
     read_only = ToolAnnotations(
         read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
     )
+    search_annotations = ToolAnnotations(
+        read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True
+    )
     mutate = ToolAnnotations(
         read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
+    )
+    indexing = ToolAnnotations(
+        read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True
     )
     destructive = ToolAnnotations(
         read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False
     )
 
-    @server.tool(annotations=read_only)
+    @server.tool(annotations=search_annotations)
     def search(
         query: str,
         source: str | None = None,
@@ -622,7 +658,7 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
 
     if profile == "admin":
 
-        @server.tool(annotations=mutate)
+        @server.tool(annotations=indexing)
         def start_reconcile(
             source: str | None = None,
             target: str | None = None,
@@ -635,7 +671,7 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                 )
             )
 
-        @server.tool(annotations=mutate)
+        @server.tool(annotations=indexing)
         def start_reindex(
             source: str | None = None,
             target: str | None = None,
@@ -655,7 +691,7 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                 )
             )
 
-        @server.tool(annotations=mutate)
+        @server.tool(annotations=indexing)
         def reconcile(
             source: str | None = None,
             target: str | None = None,
@@ -666,7 +702,7 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                 dispatcher.call("reconcile", {"source": source, "target": target, "full": full})
             )
 
-        @server.tool(annotations=mutate)
+        @server.tool(annotations=indexing)
         def reindex(
             source: str | None = None,
             target: str | None = None,

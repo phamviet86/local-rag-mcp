@@ -24,6 +24,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--protocol-version", default="2025-11-25", choices=("2025-11-25", "2025-06-18")
+    )
     return parser
 
 
@@ -109,13 +112,17 @@ def main() -> int:
             1,
             "initialize",
             {
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": args.protocol_version,
                 "capabilities": {},
                 "clientInfo": {"name": "release-ci", "version": "1"},
             },
         )
         if initialized.get("serverInfo", {}).get("name") != "local-rag-mcp":
             raise RuntimeError(f"unexpected server identity: {initialized.get('serverInfo')}")
+        if initialized.get("protocolVersion") != args.protocol_version:
+            raise RuntimeError(
+                f"unexpected negotiated protocol: {initialized.get('protocolVersion')}"
+            )
         client.notify("notifications/initialized", {})
         listed = client.request(2, "tools/list", {})
         names = {tool.get("name") for tool in listed.get("tools", [])}
@@ -131,7 +138,20 @@ def main() -> int:
         payload = json.loads(content[0]["text"])
         if payload.get("status") not in {"blocked", "degraded"}:
             raise RuntimeError(f"unexpected fresh-install doctor status: {payload}")
-        print("MCP stdio release smoke passed")
+        try:
+            client.request(6, "tools/call", {"name": "absent-tool", "arguments": {}})
+        except RuntimeError as exc:
+            if "-32602" not in str(exc):
+                raise
+        else:
+            raise RuntimeError("unknown tool did not return JSON-RPC invalid params")
+        if payload.get("status") == "blocked":
+            search = client.request(
+                7, "tools/call", {"name": "search", "arguments": {"query": "fixture"}}
+            )
+            if not search.get("isError") or not search.get("structuredContent", {}).get("error"):
+                raise RuntimeError("unavailable retrieval did not retain structured tool error")
+        print(f"MCP stdio release smoke passed ({args.protocol_version})")
         return 0
     finally:
         client.close()
