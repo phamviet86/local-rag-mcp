@@ -56,6 +56,7 @@ class LocalRAG:
             ocr_enabled=settings.ocr_mode != "no-ocr",
             ocr_offline=settings.ocr_mode == "full",
             docx_document_order=settings.docx_document_order,
+            cache_dir=settings.cache_dir,
         )
         self.indexer = Indexer(
             settings,
@@ -180,6 +181,7 @@ class MultiSourceRAG:
             ocr_enabled=settings.ocr_mode != "no-ocr",
             ocr_offline=settings.ocr_mode == "full",
             docx_document_order=settings.docx_document_order,
+            cache_dir=settings.cache_dir,
         )
         self.search_engine = SearchEngine(settings, self.db, self.embeddings)
         self.drive_backend_factory = drive_backend_factory

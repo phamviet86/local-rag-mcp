@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import mimetypes
+import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
+from .extraction_errors import ExtractionError
 from .models import ExtractedDocument, SourceSpan
 from .ocr_runtime import OCRRuntimeManager
+from .xlsx_compat import (
+    STYLES_PART,
+    color_failure,
+    copy_archive,
+    inspect_archive,
+    repair_styles,
+    stylesheet_failure,
+)
 
 
 class Extractor:
@@ -16,7 +27,9 @@ class Extractor:
         ocr_enabled: bool = True,
         ocr_offline: bool = False,
         docx_document_order: bool = False,
+        cache_dir: Path | None = None,
     ):
+        self.cache_dir = cache_dir
         self.ocr_runtime = ocr_runtime
         self.ocr_enabled = ocr_enabled
         self.ocr_offline = ocr_offline
@@ -29,7 +42,7 @@ class Extractor:
         if suffix == ".docx":
             return _docx(path, self.docx_document_order)
         if suffix == ".xlsx":
-            return _xlsx(path)
+            return _xlsx(path, self.cache_dir)
         if suffix == ".pptx":
             return _pptx(path)
         if suffix == ".pdf":
@@ -194,25 +207,59 @@ def _docx(path: Path, document_order: bool = False) -> ExtractedDocument:
     return ExtractedDocument(builder.text, builder.spans, _media(path))
 
 
-def _xlsx(path: Path) -> ExtractedDocument:
+def _xlsx(path: Path, cache_dir: Path | None = None) -> ExtractedDocument:
     from openpyxl import load_workbook
 
-    workbook, builder = load_workbook(path, read_only=True, data_only=True), _Builder()
+    builder = _Builder()
+    repairs: list[dict[str, Any]] = []
     try:
-        for sheet in workbook.worksheets:
-            for row in sheet.iter_rows():
-                for cell in row:
-                    if cell.value is not None:
-                        builder.add(
-                            str(cell.value),
-                            "xlsx_cell",
-                            f"sheet:{sheet.title}/cell:{cell.coordinate}",
-                        )
-    finally:
-        workbook.close()
-    return ExtractedDocument(
-        builder.text, builder.spans, _media(path), {"sheets": workbook.sheetnames}
-    )
+        styles = inspect_archive(path)
+        with ExitStack() as stack:
+            try:
+                workbook = load_workbook(path, read_only=True, data_only=True)
+            except Exception as original:
+                if not color_failure(original) or styles is None:
+                    raise
+                try:
+                    repaired, count = repair_styles(styles)
+                    if not count:
+                        raise original
+                    if cache_dir is not None:
+                        cache_dir.mkdir(parents=True, exist_ok=True)
+                    temporary = stack.enter_context(
+                        tempfile.TemporaryDirectory(prefix="xlsx-", dir=cache_dir)
+                    )
+                    copy = Path(temporary) / "workbook.xlsx"
+                    copy_archive(path, copy, repaired)
+                    workbook = load_workbook(copy, read_only=True, data_only=True)
+                except ExtractionError as exc:
+                    raise exc from original
+                except Exception as exc:
+                    raise ExtractionError("xlsx_stylesheet_unreadable") from exc
+                repairs = [{"kind": "xlsx_rgb_hash_prefix", "part": STYLES_PART, "count": count}]
+            stack.callback(workbook.close)
+            for sheet in workbook.worksheets:
+                for row in sheet.iter_rows():
+                    for cell in row:
+                        if cell.value is not None:
+                            builder.add(
+                                str(cell.value),
+                                "xlsx_cell",
+                                f"sheet:{sheet.title}/cell:{cell.coordinate}",
+                            )
+            metadata: dict[str, Any] = {"sheets": workbook.sheetnames}
+            if repairs:
+                metadata["compatibility_repairs"] = repairs
+            return ExtractedDocument(builder.text, builder.spans, _media(path), metadata)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        code = (
+            "xlsx_stylesheet_unreadable"
+            if repairs or stylesheet_failure(exc)
+            else "xlsx_parse_failed"
+        )
+        raise ExtractionError(code) from exc
 
 
 def _pptx(path: Path) -> ExtractedDocument:

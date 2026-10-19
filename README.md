@@ -8,8 +8,8 @@ It is a standalone service: use its CLI or MCP server, not its internal Python m
 
 ## Release status and identity
 
-**v0.10.0** adds safe source moves, stable citations, Vietnamese search, and richer retrieval context. Download its wheel and source archive only from the
-[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.0); this project does
+**v0.10.1** fixes ingestion of XLSX workbooks with hash-prefixed style colors and adds safe per-file diagnostics. Download its wheel and source archive only from the
+[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.1); this project does
 not currently publish packages to PyPI.
 
 | Purpose | Name |
@@ -37,7 +37,7 @@ operator only supplies required missing source/account details and completes loc
 entry. Normal setup does not require an API key: native text extraction and full-text search work
 without optional integrations.
 
-On macOS/Linux with Python 3.11–3.13, install the v0.10.0 release wheel into a dedicated environment;
+On macOS/Linux with Python 3.11–3.13, install the v0.10.1 release wheel into a dedicated environment;
 cloning the repository is unnecessary. Reuse an intended existing environment. The release also
 includes `SHA256SUMS`; the [verified download procedure](docs/deployment.md#verify-and-install-a-release-wheel)
 checks it before installation when required.
@@ -45,7 +45,7 @@ checks it before installation when required.
 ```bash
 python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 "$HOME/.local/share/local-rag-mcp/.venv/bin/python" -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0/phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1/phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
 "$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp" install-skills
 ```
 
@@ -71,8 +71,8 @@ that a client reconnect is still required. See [setup](docs/setup.md) for the op
 
 ## Manual installation and optional integrations
 
-Install the v0.10.0 release wheel into a dedicated production virtual environment; cloning the
-repository is not required. The [release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.0)
+Install the v0.10.1 release wheel into a dedicated production virtual environment; cloning the
+repository is not required. The [release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.1)
 also publishes SHA-256 checksums for its assets.
 
 ```bash
@@ -81,7 +81,7 @@ python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0/phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1/phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
 local-rag-mcp --help
 local-rag-mcp install-skills
 ```
@@ -96,11 +96,11 @@ Optional capabilities are explicit. Add them from the same wheel with the unique
 ```bash
 # Local embedding model support
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0/phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1/phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
 
 # Google Drive source support
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0/phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1/phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
 ```
 
 Do not substitute `local-rag-mcp[...]` in either installation method: that PyPI name is unrelated
@@ -109,7 +109,7 @@ to this project.
 For a checkout used to contribute code, follow the development instructions in
 [AGENTS.md](AGENTS.md); editable installs are not the production deployment path.
 The previous v0.8.0 assets lack `install-skills`; their original behavior and validation remain in
-[historical release notes](docs/releases/v0.8.0.md). See [v0.10.0 release notes](docs/releases/v0.10.0.md)
+[historical release notes](docs/releases/v0.8.0.md). See [v0.10.1 release notes](docs/releases/v0.10.1.md)
 for upgrade and compatibility details.
 
 ## First-time operator setup

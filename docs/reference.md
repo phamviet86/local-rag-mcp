@@ -278,3 +278,21 @@ Reader doctor exposes a generic sync error. Use aggregate coverage to disclose i
 
 Local document IDs are allocated monotonically after upgrade; deleting a document does not
 allow its stable ref to resolve to an unrelated later document. Existing IDs are preserved.
+
+### XLSX compatibility diagnostics (0.10.1)
+
+The extractor retries only openpyxl's exact `Colors must be aRGB hex values` failure. It removes
+one leading `#` from six/eight-digit hexadecimal `rgb` attributes in SpreadsheetML style elements
+in a private temporary copy. Source workbooks are not changed. Metadata/search expose
+`compatibility_repairs` (`kind=xlsx_rgb_hash_prefix`, `part=xl/styles.xml`, `count=N`).
+
+Operator errors use `file '<id-or-source-relative-path>': stage=<stage> error=<ExceptionType>`
+with `code=<code>` for extraction errors. Codes: `xlsx_unsupported_color` (unsupported RGB),
+`xlsx_stylesheet_unreadable` (unsafe/unreadable styles or failed retry), `xlsx_archive_limit`
+(resource limit), and `xlsx_parse_failed` (other loading/iteration errors). Messages contain no
+cell contents, absolute paths or underlying exception text. Embedding failures are separate
+`embedding:` warnings. Reader views retain existing redaction.
+
+Limits: 10,000 ZIP members, 16 MiB styles, 512 MiB total uncompressed data, 200:1 member compression
+ratio. DTD/entity declarations, duplicate names and missing worksheet parts are rejected.
+See [v0.10.1](releases/v0.10.1.md) for exact compatibility and upgrade/rollback rules.

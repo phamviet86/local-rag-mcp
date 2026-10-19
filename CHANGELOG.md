@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-19
+
+- Repair only hash-prefixed 6/8-digit XLSX style colors in a private, bounded temporary copy;
+  preserve source bytes, number formats, text and cell locators.
+- Expose compatibility repair metadata and operator warnings; report content-free XLSX error codes
+  with parse/download/index stages, retaining reader redaction and separate embedding warnings.
+- Reject unsafe archives, stylesheet declarations and missing worksheet parts explicitly.
+- Support direct upgrades from 0.9.0 and 0.10.0 without adding a schema migration.
+
 ## [0.10.0] - 2026-10-19
 
 - Abort incomplete local discovery without deleting indexed state; detect unique content moves.
@@ -64,3 +73,5 @@ All notable changes to this project are documented in this file. This project fo
 [0.7.0]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0
 
 [0.10.0]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.0
+
+[0.10.1]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.1

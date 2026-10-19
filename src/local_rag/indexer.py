@@ -14,6 +14,7 @@ from .config import Settings
 from .db import Database
 from .embeddings import EmbeddingProvider, cache_identity
 from .extract import Extractor
+from .extraction_errors import error_fields
 from .models import ChunkRecord, ExtractedDocument, SourceSpan
 
 ProgressCallback = Callable[[dict[str, int | str]], None]
@@ -181,7 +182,8 @@ class Indexer:
                 if current is not None:
                     searchable += 1
             except Exception as exc:
-                report["errors"].append(f"{snapshot.path}: {exc}")
+                relative = snapshot.path.relative_to(self.settings.root).as_posix()
+                report["errors"].append(f"file {relative!r}: {error_fields('parse', exc)}")
             processed += 1
             _progress(
                 progress,
@@ -205,11 +207,19 @@ class Indexer:
                 for document in prepared:
                     self._store(connection, document)
                     report["indexed"] += 1
+                    for repair in document.extracted.metadata.get("compatibility_repairs", []):
+                        if repair.get("kind") == "xlsx_rgb_hash_prefix":
+                            relative = document.snapshot.path.relative_to(
+                                self.settings.root
+                            ).as_posix()
+                            report["warnings"].append(
+                                f"file {relative!r}: compatibility_repair=xlsx_rgb_hash_prefix"
+                            )
                 for document_id in removed_ids:
                     _delete_document(connection, document_id, self.db)
                     report["removed"] += 1
         except Exception as exc:
-            report["errors"].append(f"index transaction: {exc}")
+            report["errors"].append(f"index transaction: {error_fields('index', exc)}")
             self.db.update_source_sync(self.source_id, None, "local index transaction failed")
             return report
         report["moved"] = len(moves)
@@ -540,7 +550,9 @@ class Indexer:
                         }
                     )
             except Exception as exc:
-                result["warnings"].append(f"embeddings unavailable; FTS remains usable: {exc}")
+                result["warnings"].append(
+                    f"embedding: unavailable; FTS remains usable: {type(exc).__name__}"
+                )
                 break
         return result
 

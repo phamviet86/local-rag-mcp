@@ -135,3 +135,24 @@ falls back safely. No live Drive rename assumption has been verified by the offl
 Reader MCP coverage retains counts, status and stable refs but redacts failure filenames and
 detailed reasons. Admin/reviewer inspection retains diagnostic detail. Missing content evidence
 forces a download even if the remaining Drive metadata is identical.
+
+### XLSX repair and staged errors (0.10.1)
+
+Operator file errors now report `file '<id>': stage=download_export|parse|index error=<type>`
+and, for XLSX, `code=xlsx_unsupported_color|xlsx_stylesheet_unreadable|xlsx_archive_limit|xlsx_parse_failed`.
+Coverage adds `code` beside `stage` and `reason` (exception type), without copying exception text.
+Reader-profile views redact detailed reasons/codes and file names as before. See
+[error code definitions and limits](releases/v0.10.1.md#limits-and-diagnostics).
+
+Successful hash-prefix color repair adds `compatibility_repairs` to document metadata and a warning
+`file '<id>': compatibility_repair=xlsx_rgb_hash_prefix`. The raw Drive cache and source document
+remain unchanged. Embedding failures remain distinct `embedding:` warnings after parsing/indexing.
+
+A failed parse retains the cursor and retry intent; a normal sync retries it, but can also process
+other changes. For one specific file, use `reindex --source NAME --target 'id:FILE_ID' --wait`.
+The `id:` prefix is required for IDs (a bare target is a relative path). Targeted sync still lists
+the source to resolve scope, but downloads/reindexes only matching files. Embedding completion
+checks pending chunks across the database, so other existing embedding backlog may also be
+processed; with no backlog, only newly added chunk hashes need vectors. A targeted repair can
+leave the previous source-level error until a later complete sync clears it; inspect file coverage
+and counts separately from that retained source-level diagnostic.

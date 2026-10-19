@@ -14,6 +14,7 @@ from typing import Any, Protocol, cast
 from urllib.parse import quote
 
 from .coverage import RETRY, load_coverage, save_coverage, source_failure
+from .extraction_errors import MAX_FILE_BYTES, ExtractionError, error_fields
 from .indexer import FileSnapshot, ProgressCallback
 from .sources import SourceRecord
 
@@ -565,6 +566,7 @@ class DriveAdapter:
         for item in items:
             current = known.get(item.id)
             self._stage = "index"
+            self._repairs: list[str] = []
             try:
                 if current is not None and item.same_content(current["source_version"]):
                     metadata_changed = current["source_version"] != item.fingerprint
@@ -588,6 +590,8 @@ class DriveAdapter:
                 else:
                     self._index(item, current, redownload=True)
                     report["indexed"] += 1
+                for kind in self._repairs:
+                    report["warnings"].append(f"file {item.id!r}: compatibility_repair={kind}")
                 self._cleanup_raw(item)
                 self.coverage["files"].pop(item.id, None)
                 searchable += 1
@@ -597,12 +601,12 @@ class DriveAdapter:
                 # Disk/permission failures affect the source, not just this document.
                 if exc.errno is not None:
                     raise
-                report["errors"].append(f"file {item.id!r}: {type(exc).__name__}")
+                report["errors"].append(f"file {item.id!r}: {error_fields(self._stage, exc)}")
                 self.coverage["files"][item.id] = self._file_coverage(item, current, "failed", exc)
             except Exception as exc:
                 # Parser SDKs have heterogeneous exception types. This is the explicit
                 # per-document isolation boundary: record failure, retain cursor and retry.
-                report["errors"].append(f"file {item.id!r}: {type(exc).__name__}")
+                report["errors"].append(f"file {item.id!r}: {error_fields(self._stage, exc)}")
                 self.coverage["files"][item.id] = self._file_coverage(item, current, "failed", exc)
             save_coverage(self.service.db, self.source.id, self.coverage)
             processed += 1
@@ -673,7 +677,7 @@ class DriveAdapter:
         if redownload or not pointer.is_file():
             self._stage = "download_export"
             content = self.backend.download(item)
-            if len(content) > 512 * 1024 * 1024:
+            if len(content) > MAX_FILE_BYTES:
                 raise ValueError("Drive file exceeds the 512 MiB safety limit")
             descriptor, temporary_name = tempfile.mkstemp(dir=raw_dir, prefix=".download-")
             try:
@@ -720,6 +724,8 @@ class DriveAdapter:
             "source_positions": len(extracted.spans),
             "modified_time": item.modified_time,
         }
+        if "compatibility_repairs" in extracted.metadata:
+            metadata["compatibility_repairs"] = extracted.metadata["compatibility_repairs"]
         self._stage = "index"
         self.indexer.store_external(
             f"drive://{self.source.id}/{_display_segment(item.id)}",
@@ -732,6 +738,12 @@ class DriveAdapter:
             item.fingerprint,
             item.web_url,
         )
+
+        self._repairs = [
+            repair["kind"]
+            for repair in extracted.metadata.get("compatibility_repairs", [])
+            if repair.get("kind") == "xlsx_rgb_hash_prefix"
+        ]
 
     def _file_coverage(
         self,
@@ -752,6 +764,7 @@ class DriveAdapter:
             "indexed_ancestor_ids": previous.get("drive_ancestor_ids", []),
             "stage": self._stage if error else "pending",
             "reason": type(error).__name__ if error else None,
+            "code": error.code if isinstance(error, ExtractionError) else None,
             "action": RETRY
             if error
             else "Indexing is pending; check job/index status and retry if interrupted.",

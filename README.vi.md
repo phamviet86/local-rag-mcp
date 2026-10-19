@@ -8,8 +8,8 @@ README tiếng Anh là tài liệu chuẩn: [README.md](README.md).
 
 ## Trạng thái phát hành
 
-**v0.10.0** bổ sung di chuyển nguồn an toàn, trích dẫn ổn định và tìm kiếm tiếng Việt. Tải wheel và source archive duy nhất từ
-[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.0); hiện dự án chưa
+**v0.10.1** sửa lỗi đọc XLSX có mã màu bắt đầu bằng `#` và bổ sung mã lỗi cho từng file. Tải wheel và source archive duy nhất từ
+[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.1); hiện dự án chưa
 phát hành package lên PyPI.
 
 | Mục đích | Tên |
@@ -31,14 +31,14 @@ tự thực hiện cấu hình và kiểm chứng. Bạn chỉ cung cấp thông
 thư mục local, folder ID, tài khoản hoặc đường dẫn file OAuth; đăng nhập và nhập secret thực hiện
 trực tiếp trên máy, không dán vào chat. Full-text search không cần API key.
 
-Cài wheel v0.10.0 trên macOS/Linux với Python 3.11–3.13; không cần clone repository. Agent kiểm tra
+Cài wheel v0.10.1 trên macOS/Linux với Python 3.11–3.13; không cần clone repository. Agent kiểm tra
 và tái sử dụng môi trường cài đặt phù hợp nếu đã có. Release kèm `SHA256SUMS`; xem
 [quy trình xác minh](docs/deployment.md#verify-and-install-a-release-wheel) khi cần kiểm tra trước khi cài:
 
 ```bash
 python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 "$HOME/.local/share/local-rag-mcp/.venv/bin/python" -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0/phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1/phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
 "$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp" install-skills
 ```
 
@@ -62,8 +62,8 @@ các thao tác được giao. Xem [docs/setup.md](docs/setup.md).
 
 ## Cài thủ công và tích hợp tuỳ chọn
 
-Cài trực tiếp wheel v0.10.0 vào virtual environment riêng (Python 3.11–3.13); không cần clone mã
-nguồn. [Trang release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.0) công bố
+Cài trực tiếp wheel v0.10.1 vào virtual environment riêng (Python 3.11–3.13); không cần clone mã
+nguồn. [Trang release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.1) công bố
 SHA-256 cho từng artifact:
 
 ```bash
@@ -71,7 +71,7 @@ mkdir -p "$HOME/.local/share/local-rag-mcp"
 python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
 python -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0/phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1/phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
 local-rag-mcp setup --no-ocr
 local-rag-mcp install-skills
 local-rag-mcp doctor --json
@@ -86,9 +86,9 @@ Extras cài từ cùng wheel release bằng distribution đúng:
 
 ```bash
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0/phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1/phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0/phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1/phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
 ```
 
 `setup --full` tải và kiểm tra runtime OCR local; `setup --no-ocr` vẫn hỗ trợ text/Office/native PDF
@@ -107,7 +107,7 @@ nâng cấp, rollback và gỡ cài đặt. Tham chiếu tính năng/lệnh đ�
 [docs/reference.md](docs/reference.md).
 
 Các artifact v0.8.0 trước đây chưa có `install-skills`; giữ nguyên bằng chứng và hướng dẫn cũ trong
-[ghi chú v0.8.0](docs/releases/v0.8.0.md). Xem [ghi chú v0.10.0](docs/releases/v0.10.0.md) để nâng cấp.
+[ghi chú v0.8.0](docs/releases/v0.8.0.md). Xem [ghi chú v0.10.1](docs/releases/v0.10.1.md) để nâng cấp.
 
 ## Kết nối Codex MCP
 
@@ -127,7 +127,7 @@ cho tiến trình local đáng tin cậy. Đọc [docs/agents.md](docs/agents.md
 
 See [Drive sync identity, retries, coverage and isolated trial](docs/drive-sync.md).
 
-## Nâng cấp 0.10.0
+## Nâng cấp 0.10.1
 
 Phiên bản này bổ sung bảo toàn dữ liệu khi đổi vị trí nguồn, định danh trích dẫn ổn định,
-tìm kiếm tiếng Việt không dấu và ngữ cảnh kết quả. Xem [hướng dẫn nâng cấp](docs/releases/v0.10.0.md).
+tìm kiếm tiếng Việt không dấu và ngữ cảnh kết quả. Xem [hướng dẫn nâng cấp](docs/releases/v0.10.1.md).
