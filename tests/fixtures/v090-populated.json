@@ -1,0 +1,389 @@
+{
+  "generated_by_commit": "d9ec11b3f8cb2f222381b15583b6842070106939",
+  "migrations": [
+    "\n    CREATE TABLE documents (\n      id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, relative_path TEXT NOT NULL,\n      content_hash TEXT NOT NULL, size INTEGER NOT NULL, modified_ns INTEGER NOT NULL,\n      media_type TEXT NOT NULL, title TEXT NOT NULL, metadata_json TEXT NOT NULL,\n      artifact_path TEXT NOT NULL, indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n    );\n    CREATE TABLE chunks (\n      id INTEGER PRIMARY KEY,\n      document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n      ordinal INTEGER NOT NULL, text TEXT NOT NULL,\n      start_char INTEGER NOT NULL, end_char INTEGER NOT NULL,\n      chunk_hash TEXT NOT NULL, provenance_json TEXT NOT NULL, UNIQUE(document_id, ordinal)\n    );\n    CREATE VIRTUAL TABLE chunks_fts USING fts5(\n      text, title, relative_path UNINDEXED, chunk_id UNINDEXED, tokenize='unicode61'\n    );\n    CREATE INDEX chunks_document_idx ON chunks(document_id);\n    CREATE INDEX chunks_hash_idx ON chunks(chunk_hash);\n    CREATE TABLE vectors (\n      chunk_hash TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,\n      vector_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      PRIMARY KEY(chunk_hash, provider, model)\n    );\n    CREATE TABLE reviews (\n      id INTEGER PRIMARY KEY, document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,\n      path TEXT NOT NULL, content_hash TEXT NOT NULL, page INTEGER, reason TEXT NOT NULL,\n      detail_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', resolution TEXT,\n      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      UNIQUE(path, content_hash, page, reason)\n    );\n    CREATE TABLE agent_metadata (\n      id INTEGER PRIMARY KEY,\n      document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n      key TEXT NOT NULL, value_json TEXT NOT NULL, evidence_json TEXT NOT NULL,\n      actor TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n    );\n    CREATE TABLE relationships (\n      id INTEGER PRIMARY KEY,\n      source_document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n      target_document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n      relation TEXT NOT NULL, evidence_json TEXT NOT NULL, actor TEXT NOT NULL,\n      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      UNIQUE(source_document_id, target_document_id, relation)\n    );\n    ",
+    "\n    DROP TABLE IF EXISTS jobs;\n    ALTER TABLE documents ADD COLUMN effective_artifact_path TEXT;\n    CREATE TABLE review_revisions (\n      id INTEGER PRIMARY KEY,\n      review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,\n      document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n      page INTEGER NOT NULL, corrected_text TEXT NOT NULL, evidence_json TEXT NOT NULL,\n      actor TEXT NOT NULL, artifact_path TEXT NOT NULL,\n      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n    );\n    CREATE INDEX review_revisions_document_idx ON review_revisions(document_id);\n    CREATE INDEX agent_metadata_document_idx ON agent_metadata(document_id);\n    CREATE INDEX relationships_source_idx ON relationships(source_document_id);\n    CREATE INDEX relationships_target_idx ON relationships(target_document_id);\n    CREATE VIRTUAL TABLE metadata_fts USING fts5(\n      content, document_id UNINDEXED, kind UNINDEXED, provenance UNINDEXED,\n      tokenize='unicode61'\n    );\n    INSERT INTO metadata_fts(content,document_id,kind,provenance)\n      SELECT title || ' ' || metadata_json,id,'automatic','[]' FROM documents;\n    ",
+    "\n    CREATE TABLE sources (\n      id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL,\n      kind TEXT NOT NULL CHECK(kind IN ('local','google_drive')),\n      locator TEXT NOT NULL, account TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,\n      config_json TEXT NOT NULL DEFAULT '{}', cursor TEXT,\n      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      last_sync_at TEXT, last_error TEXT\n    );\n    INSERT INTO sources(id,name,kind,locator,config_json)\n      SELECT 'legacy','default','local','','{}'\n      WHERE EXISTS(SELECT 1 FROM documents);\n    ALTER TABLE documents ADD COLUMN source_id TEXT NOT NULL DEFAULT 'legacy';\n    ALTER TABLE documents ADD COLUMN external_id TEXT NOT NULL DEFAULT '';\n    ALTER TABLE documents ADD COLUMN source_version TEXT NOT NULL DEFAULT '';\n    ALTER TABLE documents ADD COLUMN source_url TEXT NOT NULL DEFAULT '';\n    UPDATE documents SET external_id=path WHERE external_id='';\n    CREATE UNIQUE INDEX documents_source_external_idx ON documents(source_id,external_id);\n    CREATE INDEX documents_source_path_idx ON documents(source_id,relative_path);\n    ALTER TABLE chunks ADD COLUMN page_number INTEGER;\n    CREATE TABLE source_sync_state (\n      source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,\n      key TEXT NOT NULL, value_json TEXT NOT NULL,\n      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      PRIMARY KEY(source_id,key)\n    );\n    ",
+    "\n    CREATE TABLE index_jobs (\n      id TEXT PRIMARY KEY, kind TEXT NOT NULL,\n      source TEXT, target TEXT, reextract INTEGER NOT NULL DEFAULT 0,\n      full INTEGER NOT NULL DEFAULT 0,\n      state TEXT NOT NULL CHECK(state IN ('queued','running','complete','error','rejected')),\n      phase TEXT NOT NULL DEFAULT 'queued', discovered INTEGER NOT NULL DEFAULT 0,\n      processed INTEGER NOT NULL DEFAULT 0, searchable INTEGER NOT NULL DEFAULT 0,\n      remaining INTEGER NOT NULL DEFAULT 0, embedding_pending INTEGER NOT NULL DEFAULT 0,\n      heartbeat_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      started_at TEXT, completed_at TEXT, error TEXT\n    );\n    CREATE INDEX index_jobs_state_created_idx ON index_jobs(state,created_at);\n    CREATE TABLE index_writer_lease (\n      singleton INTEGER PRIMARY KEY CHECK(singleton=1), job_id TEXT,\n      heartbeat_at TEXT, FOREIGN KEY(job_id) REFERENCES index_jobs(id)\n    );\n    INSERT INTO index_writer_lease(singleton) VALUES(1);\n    "
+  ],
+  "tables": {
+    "sources": [
+      {
+        "id": "legacy",
+        "name": "default",
+        "kind": "local",
+        "locator": "@FIXTURE@/root",
+        "account": "",
+        "enabled": 1,
+        "config_json": "{}",
+        "cursor": null,
+        "created_at": "2026-10-19 02:31:02",
+        "updated_at": "2026-10-19 02:31:02",
+        "last_sync_at": null,
+        "last_error": null
+      }
+    ],
+    "documents": [
+      {
+        "id": 1,
+        "path": "@FIXTURE@/root/note.txt",
+        "relative_path": "note.txt",
+        "content_hash": "5b6bc1c4a9993568353210424e67fc16130c958944ed191fa9518942d657387b",
+        "size": 31,
+        "modified_ns": 1792377062846981300,
+        "media_type": "text/plain",
+        "title": "note",
+        "metadata_json": "{\"title\": \"note\", \"extension\": \".txt\", \"size\": 31, \"modified_ns\": 1792377062846981300, \"content_hash\": \"5b6bc1c4a9993568353210424e67fc16130c958944ed191fa9518942d657387b\", \"word_count\": 4, \"source_positions\": 1}",
+        "artifact_path": "@FIXTURE@/home/artifacts/extracted/5b6bc1c4a9993568353210424e67fc16130c958944ed191fa9518942d657387b.json",
+        "indexed_at": "2026-10-19 02:31:02",
+        "effective_artifact_path": null,
+        "source_id": "legacy",
+        "external_id": "note.txt",
+        "source_version": "",
+        "source_url": ""
+      },
+      {
+        "id": 2,
+        "path": "@FIXTURE@/root/sample.docx",
+        "relative_path": "sample.docx",
+        "content_hash": "b9d54e2a41cc4b78bef92d804e8e62ad4ee5afa60499ecc6b66dae7ad2990e32",
+        "size": 36765,
+        "modified_ns": 1792377062861134735,
+        "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "title": "sample",
+        "metadata_json": "{\"title\": \"sample\", \"extension\": \".docx\", \"size\": 36765, \"modified_ns\": 1792377062861134735, \"content_hash\": \"b9d54e2a41cc4b78bef92d804e8e62ad4ee5afa60499ecc6b66dae7ad2990e32\", \"word_count\": 8, \"source_positions\": 5}",
+        "artifact_path": "@FIXTURE@/home/artifacts/extracted/b9d54e2a41cc4b78bef92d804e8e62ad4ee5afa60499ecc6b66dae7ad2990e32.json",
+        "indexed_at": "2026-10-19 02:31:02",
+        "effective_artifact_path": null,
+        "source_id": "legacy",
+        "external_id": "sample.docx",
+        "source_version": "",
+        "source_url": ""
+      },
+      {
+        "id": 3,
+        "path": "@FIXTURE@/root/scan.pdf",
+        "relative_path": "scan.pdf",
+        "content_hash": "79369aca27f9c20bf46f684a22ecdb0283925a947e667c660b50c7c32c55dcbb",
+        "size": 598,
+        "modified_ns": 1792377062847024615,
+        "media_type": "application/pdf",
+        "title": "scan",
+        "metadata_json": "{\"title\": \"scan\", \"extension\": \".pdf\", \"size\": 598, \"modified_ns\": 1792377062847024615, \"content_hash\": \"79369aca27f9c20bf46f684a22ecdb0283925a947e667c660b50c7c32c55dcbb\", \"word_count\": 5, \"source_positions\": 1, \"pdf_type\": \"text_based\", \"page_count\": 1, \"classification_confidence\": 0.5, \"pages_routed_to_ocr\": [1], \"complex_layout\": false, \"review_corrections\": 1}",
+        "artifact_path": "@FIXTURE@/home/artifacts/extracted/79369aca27f9c20bf46f684a22ecdb0283925a947e667c660b50c7c32c55dcbb.json",
+        "indexed_at": "2026-10-19 02:31:02",
+        "effective_artifact_path": "@FIXTURE@/home/artifacts/revisions/25141bc0999582c813dad15a608a1a947b9c8e54b3b5c4590c81eae7a56b320c.json",
+        "source_id": "legacy",
+        "external_id": "scan.pdf",
+        "source_version": "",
+        "source_url": ""
+      }
+    ],
+    "chunks": [
+      {
+        "id": 1,
+        "document_id": 1,
+        "ordinal": 0,
+        "text": "hợp đồng đường orchard",
+        "start_char": 0,
+        "end_char": 22,
+        "chunk_hash": "5b6bc1c4a9993568353210424e67fc16130c958944ed191fa9518942d657387b",
+        "provenance_json": "[{\"kind\": \"text_line\", \"locator\": \"line:1\", \"start\": 0, \"end\": 22, \"metadata\": {}}]",
+        "page_number": null
+      },
+      {
+        "id": 2,
+        "document_id": 2,
+        "ordinal": 0,
+        "text": "Policy\n\nbefore table\n\nDetail\n\nafter table\n\ntable contents",
+        "start_char": 0,
+        "end_char": 57,
+        "chunk_hash": "5f900683b715432e2d802be9d28dc8b3cb65fee3f524107d2d0724d23675b915",
+        "provenance_json": "[{\"kind\": \"docx_paragraph\", \"locator\": \"paragraph:1\", \"start\": 0, \"end\": 6, \"metadata\": {}}, {\"kind\": \"docx_paragraph\", \"locator\": \"paragraph:2\", \"start\": 8, \"end\": 20, \"metadata\": {}}, {\"kind\": \"docx_paragraph\", \"locator\": \"paragraph:3\", \"start\": 22, \"end\": 28, \"metadata\": {}}, {\"kind\": \"docx_paragraph\", \"locator\": \"paragraph:4\", \"start\": 30, \"end\": 41, \"metadata\": {}}, {\"kind\": \"docx_cell\", \"locator\": \"table:1/row:1/column:1\", \"start\": 43, \"end\": 57, \"metadata\": {}}]",
+        "page_number": null
+      },
+      {
+        "id": 3,
+        "document_id": 3,
+        "ordinal": 0,
+        "text": "Human corrected hợp đồng orchard",
+        "start_char": 0,
+        "end_char": 32,
+        "chunk_hash": "d6154626d9b17d7dab1eea7163323fa655c659df9609e586f01c7543647fc1c3",
+        "provenance_json": "[{\"kind\": \"pdf_page\", \"locator\": \"page:1\", \"start\": 0, \"end\": 32, \"metadata\": {\"source\": \"review_correction\", \"actor\": \"fixture-reviewer\", \"evidence\": [{\"path\": \"scan.pdf\", \"locator\": \"page:1\", \"quote\": \"source scan\"}]}}]",
+        "page_number": 1
+      }
+    ],
+    "vectors": [
+      {
+        "chunk_hash": "5b6bc1c4a9993568353210424e67fc16130c958944ed191fa9518942d657387b",
+        "provider": "fixture",
+        "model": "v1#5ca6d1df869a2c9db98a",
+        "vector_json": "[1.0, 0.25, 1.0]",
+        "created_at": "2026-10-19 02:31:02"
+      },
+      {
+        "chunk_hash": "5f900683b715432e2d802be9d28dc8b3cb65fee3f524107d2d0724d23675b915",
+        "provider": "fixture",
+        "model": "v1#5ca6d1df869a2c9db98a",
+        "vector_json": "[0.0, 0.25, 1.0]",
+        "created_at": "2026-10-19 02:31:02"
+      },
+      {
+        "chunk_hash": "95b6e5bea8d009433e55526b857eb8e17ae606828e023be646f993943e6e65c1",
+        "provider": "fixture",
+        "model": "v1#5ca6d1df869a2c9db98a",
+        "vector_json": "[0.0, 0.25, 1.0]",
+        "created_at": "2026-10-19 02:31:02"
+      },
+      {
+        "chunk_hash": "d6154626d9b17d7dab1eea7163323fa655c659df9609e586f01c7543647fc1c3",
+        "provider": "fixture",
+        "model": "v1#5ca6d1df869a2c9db98a",
+        "vector_json": "[1.0, 0.25, 1.0]",
+        "created_at": "2026-10-19 02:31:02"
+      }
+    ],
+    "reviews": [
+      {
+        "id": 1,
+        "document_id": 3,
+        "path": "@FIXTURE@/root/scan.pdf",
+        "content_hash": "79369aca27f9c20bf46f684a22ecdb0283925a947e667c660b50c7c32c55dcbb",
+        "page": 1,
+        "reason": "ocr_runtime_missing",
+        "detail_json": "{\"action\": \"run local-rag-mcp setup --full, then reindex --reextract\"}",
+        "status": "resolved",
+        "resolution": "corrected by fixture-reviewer",
+        "created_at": "2026-10-19 02:31:02",
+        "updated_at": "2026-10-19 02:31:02"
+      }
+    ],
+    "review_revisions": [
+      {
+        "id": 1,
+        "review_id": 1,
+        "document_id": 3,
+        "page": 1,
+        "corrected_text": "Human corrected hợp đồng orchard",
+        "evidence_json": "[{\"path\": \"scan.pdf\", \"locator\": \"page:1\", \"quote\": \"source scan\"}]",
+        "actor": "fixture-reviewer",
+        "artifact_path": "@FIXTURE@/home/artifacts/revisions/25141bc0999582c813dad15a608a1a947b9c8e54b3b5c4590c81eae7a56b320c.json",
+        "created_at": "2026-10-19 02:31:02"
+      }
+    ],
+    "agent_metadata": [
+      {
+        "id": 1,
+        "document_id": 3,
+        "key": "reviewed",
+        "value_json": "\"\\u0111\\u00e3 duy\\u1ec7t\"",
+        "evidence_json": "[{\"path\": \"scan.pdf\", \"locator\": \"page:1\", \"quote\": \"source scan\"}]",
+        "actor": "fixture",
+        "created_at": "2026-10-19 02:31:02"
+      }
+    ],
+    "relationships": [
+      {
+        "id": 1,
+        "source_document_id": 3,
+        "target_document_id": 1,
+        "relation": "supports",
+        "evidence_json": "[{\"path\": \"scan.pdf\", \"locator\": \"page:1\", \"quote\": \"source scan\"}]",
+        "actor": "fixture",
+        "created_at": "2026-10-19 02:31:02"
+      }
+    ],
+    "chunks_fts": [
+      {
+        "text": "hợp đồng đường orchard",
+        "title": "note",
+        "relative_path": "note.txt",
+        "chunk_id": 1
+      },
+      {
+        "text": "Policy\n\nbefore table\n\nDetail\n\nafter table\n\ntable contents",
+        "title": "sample",
+        "relative_path": "sample.docx",
+        "chunk_id": 2
+      },
+      {
+        "text": "Human corrected hợp đồng orchard",
+        "title": "scan",
+        "relative_path": "scan.pdf",
+        "chunk_id": 3
+      }
+    ],
+    "metadata_fts": [
+      {
+        "content": "sample {\"title\": \"sample\", \"extension\": \".docx\", \"size\": 36765, \"modified_ns\": 1792377062861134735, \"content_hash\": \"b9d54e2a41cc4b78bef92d804e8e62ad4ee5afa60499ecc6b66dae7ad2990e32\", \"word_count\": 8, \"source_positions\": 5}",
+        "document_id": 2,
+        "kind": "automatic",
+        "provenance": "[]"
+      },
+      {
+        "content": "scan {\"title\": \"scan\", \"extension\": \".pdf\", \"size\": 598, \"modified_ns\": 1792377062847024615, \"content_hash\": \"79369aca27f9c20bf46f684a22ecdb0283925a947e667c660b50c7c32c55dcbb\", \"word_count\": 5, \"source_positions\": 1, \"pdf_type\": \"text_based\", \"page_count\": 1, \"classification_confidence\": 0.5, \"pages_routed_to_ocr\": [1], \"complex_layout\": false, \"review_corrections\": 1}",
+        "document_id": 3,
+        "kind": "automatic",
+        "provenance": "[]"
+      },
+      {
+        "content": "reviewed \"\\u0111\\u00e3 duy\\u1ec7t\"",
+        "document_id": 3,
+        "kind": "agent_metadata",
+        "provenance": "[{\"path\": \"scan.pdf\", \"locator\": \"page:1\", \"quote\": \"source scan\"}]"
+      },
+      {
+        "content": "supports scan.pdf note.txt",
+        "document_id": 3,
+        "kind": "relationship",
+        "provenance": "[{\"path\": \"scan.pdf\", \"locator\": \"page:1\", \"quote\": \"source scan\"}]"
+      },
+      {
+        "content": "note {\"title\": \"note\", \"extension\": \".txt\", \"size\": 31, \"modified_ns\": 1792377062846981300, \"content_hash\": \"5b6bc1c4a9993568353210424e67fc16130c958944ed191fa9518942d657387b\", \"word_count\": 4, \"source_positions\": 1}",
+        "document_id": 1,
+        "kind": "automatic",
+        "provenance": "[]"
+      },
+      {
+        "content": "supports scan.pdf note.txt",
+        "document_id": 1,
+        "kind": "relationship",
+        "provenance": "[{\"path\": \"scan.pdf\", \"locator\": \"page:1\", \"quote\": \"source scan\"}]"
+      }
+    ]
+  },
+  "artifacts": {
+    "@FIXTURE@/home/artifacts/revisions/25141bc0999582c813dad15a608a1a947b9c8e54b3b5c4590c81eae7a56b320c.json": {
+      "source_hash": "79369aca27f9c20bf46f684a22ecdb0283925a947e667c660b50c7c32c55dcbb",
+      "text": "Human corrected hợp đồng orchard",
+      "spans": [
+        {
+          "kind": "pdf_page",
+          "locator": "page:1",
+          "start": 0,
+          "end": 32,
+          "metadata": {
+            "source": "review_correction",
+            "actor": "fixture-reviewer",
+            "evidence": [
+              {
+                "path": "scan.pdf",
+                "locator": "page:1",
+                "quote": "source scan"
+              }
+            ]
+          }
+        }
+      ],
+      "media_type": "application/pdf",
+      "metadata": {
+        "pdf_type": "text_based",
+        "page_count": 1,
+        "classification_confidence": 0.5,
+        "pages_routed_to_ocr": [
+          1
+        ],
+        "complex_layout": false
+      },
+      "reviews": [],
+      "corrections": {
+        "1": "Human corrected hợp đồng orchard"
+      }
+    },
+    "@FIXTURE@/home/artifacts/extracted/79369aca27f9c20bf46f684a22ecdb0283925a947e667c660b50c7c32c55dcbb.json": {
+      "source_hash": "79369aca27f9c20bf46f684a22ecdb0283925a947e667c660b50c7c32c55dcbb",
+      "text": "## Original uncertain page",
+      "spans": [
+        {
+          "kind": "pdf_page",
+          "locator": "page:1",
+          "start": 0,
+          "end": 26,
+          "metadata": {
+            "source": "native"
+          }
+        }
+      ],
+      "media_type": "application/pdf",
+      "metadata": {
+        "pdf_type": "text_based",
+        "page_count": 1,
+        "classification_confidence": 0.5,
+        "pages_routed_to_ocr": [
+          1
+        ],
+        "complex_layout": false
+      },
+      "reviews": [
+        {
+          "page": 1,
+          "reason": "ocr_runtime_missing",
+          "detail": {
+            "action": "run local-rag-mcp setup --full, then reindex --reextract"
+          }
+        }
+      ]
+    },
+    "@FIXTURE@/home/artifacts/extracted/b9d54e2a41cc4b78bef92d804e8e62ad4ee5afa60499ecc6b66dae7ad2990e32.json": {
+      "source_hash": "b9d54e2a41cc4b78bef92d804e8e62ad4ee5afa60499ecc6b66dae7ad2990e32",
+      "text": "Policy\n\nbefore table\n\nDetail\n\nafter table\n\ntable contents",
+      "spans": [
+        {
+          "kind": "docx_paragraph",
+          "locator": "paragraph:1",
+          "start": 0,
+          "end": 6,
+          "metadata": {}
+        },
+        {
+          "kind": "docx_paragraph",
+          "locator": "paragraph:2",
+          "start": 8,
+          "end": 20,
+          "metadata": {}
+        },
+        {
+          "kind": "docx_paragraph",
+          "locator": "paragraph:3",
+          "start": 22,
+          "end": 28,
+          "metadata": {}
+        },
+        {
+          "kind": "docx_paragraph",
+          "locator": "paragraph:4",
+          "start": 30,
+          "end": 41,
+          "metadata": {}
+        },
+        {
+          "kind": "docx_cell",
+          "locator": "table:1/row:1/column:1",
+          "start": 43,
+          "end": 57,
+          "metadata": {}
+        }
+      ],
+      "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "metadata": {},
+      "reviews": []
+    },
+    "@FIXTURE@/home/artifacts/extracted/5b6bc1c4a9993568353210424e67fc16130c958944ed191fa9518942d657387b.json": {
+      "source_hash": "5b6bc1c4a9993568353210424e67fc16130c958944ed191fa9518942d657387b",
+      "text": "hợp đồng đường orchard",
+      "spans": [
+        {
+          "kind": "text_line",
+          "locator": "line:1",
+          "start": 0,
+          "end": 22,
+          "metadata": {}
+        }
+      ],
+      "media_type": "text/plain",
+      "metadata": {},
+      "reviews": []
+    }
+  }
+}

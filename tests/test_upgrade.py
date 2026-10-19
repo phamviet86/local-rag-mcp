@@ -331,3 +331,105 @@ def test_search_filters_apply_through_sdk_and_cli(tmp_path: Path, capsys):
     assert [hit["path"] for hit in json.loads(capsys.readouterr().out)["results"]] == ["new.txt"]
     with pytest.raises(ValueError, match="must precede"):
         service.search("orchard", modified_after="2026-01-01", modified_before="2020-01-01")
+
+
+def test_populated_v090_migrations_preserve_rows_vectors_and_chunk_text(tmp_path: Path):
+    import json
+    import sqlite3
+
+    from local_rag.db import Database
+    from local_rag.indexer import _chunks, _document_from_artifact
+
+    fixture = Path(__file__).parent / "fixtures/v090-populated.json"
+    payload = json.loads(fixture.read_text().replace("@FIXTURE@", str(tmp_path)))
+    assert payload["generated_by_commit"] == "d9ec11b3f8cb2f222381b15583b6842070106939"
+    home = tmp_path / "home"
+    home.mkdir()
+    db = Database(home / "index.sqlite3")
+    with sqlite3.connect(db.path) as connection:
+        connection.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY)")
+        for number, migration in enumerate(payload["migrations"], 1):
+            connection.executescript(migration)
+            connection.execute("INSERT INTO schema_migrations VALUES(?)", (number,))
+        for table, rows in payload["tables"].items():
+            for row in rows:
+                columns = ",".join(row)
+                placeholders = ",".join("?" for _ in row)
+                connection.execute(
+                    f"INSERT INTO {table}({columns}) VALUES({placeholders})", tuple(row.values())
+                )
+    for path, artifact in payload["artifacts"].items():
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(artifact))
+
+    class NoEmbeddings:
+        identity = ("fixture", "v1")
+
+        def embed(self, texts):
+            raise AssertionError("upgrade must not call embeddings")
+
+    service = MultiSourceRAG(Settings(root=tmp_path / "root", home=home), NoEmbeddings())
+    db.migrate()  # A second startup must be idempotent.
+    with db.connect() as connection:
+        for table in (
+            "documents",
+            "chunks",
+            "vectors",
+            "reviews",
+            "review_revisions",
+            "agent_metadata",
+            "relationships",
+        ):
+            expected = payload["tables"][table]
+            columns = ",".join(expected[0])
+            actual = [dict(row) for row in connection.execute(f"SELECT {columns} FROM {table}")]
+            assert actual == expected, table
+        assert connection.execute(
+            "SELECT count(*) FROM vectors WHERE vector_blob IS NOT NULL"
+        ).fetchone()[0] == len(payload["tables"]["vectors"])
+    assert service.read("default:scan.pdf")["has_review_corrections"]
+    assert service.search("duong", mode="full_text")["results"]
+    for document in payload["tables"]["documents"]:
+        path = document["effective_artifact_path"] or document["artifact_path"]
+        extracted = _document_from_artifact(payload["artifacts"][path])
+        previous = [
+            chunk for chunk in payload["tables"]["chunks"] if chunk["document_id"] == document["id"]
+        ]
+        assert [(chunk.text, chunk.chunk_hash) for chunk in _chunks(extracted, 1200, 150)] == [
+            (chunk["text"], chunk["chunk_hash"]) for chunk in previous
+        ]
+
+
+def test_local_move_keeps_ocr_corrections_and_never_embeds(tmp_path: Path):
+    from tests.helpers import write_text_pdf
+    from tests.test_optimizations import BatchEmbeddings
+
+    root, home = tmp_path / "root", tmp_path / "home"
+    folder = root / "old"
+    folder.mkdir(parents=True)
+    write_text_pdf(folder / "scan.pdf", "Original uncertain page")
+    embeddings = BatchEmbeddings()
+    service = MultiSourceRAG(Settings(root=home, home=home, ocr_mode="no-ocr"), embeddings)
+    service.add_local_source("notes", root)
+    service.reconcile()
+    review = service.reviews()[0]
+    evidence = [{"path": "notes:old/scan.pdf", "locator": "page:1", "quote": "source"}]
+    service.correct_review(review["id"], "Human corrected orchard", evidence, "reviewer")
+    service.add_metadata("notes:old/scan.pdf", "tag", "kept", evidence, "reviewer")
+    service.reconcile()
+    before = service.db.resolve_document("notes:old/scan.pdf")
+    calls = embeddings.calls
+    folder.rename(root / "new")
+    with patch.object(service.extractor, "extract", side_effect=AssertionError("must not extract")):
+        report = service.reconcile()["sources"][0]
+    assert report["moved"] == 1 and embeddings.calls == calls
+    after = service.db.resolve_document("notes:new/scan.pdf")
+    assert after["id"] == before["id"]
+    assert after["effective_artifact_path"] == before["effective_artifact_path"]
+    assert service.db.review(review["id"])["status"] == "resolved"
+    assert service.metadata("notes:new/scan.pdf")["agent"][0]["key"] == "tag"
+    hit = service.search("corrected", mode="full_text")["results"][0]
+    assert (
+        service.read(hit["stable_ref"])["text"][hit["start_char"] : hit["end_char"]] == hit["text"]
+    )

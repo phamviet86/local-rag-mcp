@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -75,6 +76,7 @@ class Indexer:
             entries = sorted(iterator, key=lambda entry: entry.name)
         for entry in entries:
             candidate = Path(entry.path)
+            entry.stat(follow_symlinks=False)  # Missing/unreadable entries invalidate discovery.
             if entry.is_symlink():
                 if entry.is_file(follow_symlinks=True):
                     snapshot = self.snapshot(candidate)
@@ -91,10 +93,12 @@ class Indexer:
 
     def snapshot(self, path: Path) -> FileSnapshot | None:
         resolved = path.resolve()
-        if not self.settings.accepts(resolved) or not resolved.is_file():
+        if not self.settings.accepts(resolved):
             return None
-        stat = resolved.stat()
-        return FileSnapshot(resolved, stat.st_size, stat.st_mtime_ns)
+        info = resolved.stat()
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        return FileSnapshot(resolved, info.st_size, info.st_mtime_ns)
 
     def reconcile(
         self,
@@ -205,6 +209,7 @@ class Indexer:
                     report["removed"] += 1
         except Exception as exc:
             report["errors"].append(f"index transaction: {exc}")
+            self.db.update_source_sync(self.source_id, None, "local index transaction failed")
             return report
         report["moved"] = len(moves)
         searchable = len(snapshots) - len(report["errors"])
@@ -225,6 +230,9 @@ class Indexer:
             report["warnings"].append(
                 f"{missing_ocr} PDF page(s) require OCR and were added to the review queue"
             )
+        self.db.update_source_sync(
+            self.source_id, None, "local file indexing failed" if report["errors"] else None
+        )
         return report
 
     def _classify(

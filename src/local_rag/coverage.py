@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from .db import Database
+from .db import Database, stable_ref
 
 KEY = "drive_coverage_v1"
 RETRY = (
@@ -82,6 +82,33 @@ def index_coverage(
 ) -> dict[str, Any]:
     if offset < 0 or not 1 <= limit <= 100:
         raise ValueError("coverage offset must be nonnegative and limit must be 1..100")
+    from .search import _filter_sql
+
+    filters, values = _filter_sql(folder, source)
+    with db.connect() as connection:
+        documents = connection.execute(
+            f"""SELECT d.*,s.name source_name,s.kind source_kind FROM documents d
+                JOIN sources s ON s.id=d.source_id WHERE s.enabled=1 {filters}
+                ORDER BY d.source_id,d.id LIMIT ? OFFSET ?""",
+            [*values, limit, offset],
+        ).fetchall()
+        document_count = connection.execute(
+            f"""SELECT count(*) FROM documents d JOIN sources s ON s.id=d.source_id
+                WHERE s.enabled=1 {filters}""",
+            values,
+        ).fetchone()[0]
+    local_sources = [
+        {
+            "source": record["name"],
+            "source_id": record["id"],
+            "status": "partial"
+            if record["last_error"]
+            else ("complete" if record["last_sync_at"] else "unknown"),
+            "has_error": bool(record["last_error"]),
+        }
+        for record in db.sources(enabled=True)
+        if record["kind"] == "local" and (not source or source in {record["id"], record["name"]})
+    ]
     summaries: list[dict[str, Any]] = []
     details: list[dict[str, Any]] = []
     for record in db.sources(enabled=True):
@@ -126,9 +153,20 @@ def index_coverage(
                 }
             )
     details.sort(key=lambda item: (item["source_id"], item.get("file_id", ""), item["stage"]))
-    incomplete = any(item["status"] != "complete" for item in summaries)
+    incomplete = any(item["status"] != "complete" for item in [*summaries, *local_sources])
     return {
         "kind": "drive_sync",
+        "local_sources": local_sources,
+        "indexed_documents": [
+            {
+                "stable_ref": stable_ref(row),
+                "source": row["source_name"],
+                "source_id": row["source_id"],
+            }
+            for row in documents
+        ],
+        "total_indexed_documents": document_count,
+        "next_document_offset": offset + limit if offset + limit < document_count else None,
         "status": "partial" if incomplete else "complete",
         "scope": folder,
         "sources": summaries,

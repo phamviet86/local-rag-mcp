@@ -131,3 +131,7 @@ Drive sync now reports `metadata_updated` for location-only changes. Content key
 Matching content updates paths and identity without extraction or downloads, retaining derived state.
 Missing content evidence or changed MIME falls back to download; changed native modified time also
 falls back safely. No live Drive rename assumption has been verified by the offline test suite.
+
+Reader MCP coverage retains counts, status and stable refs but redacts failure filenames and
+detailed reasons. Admin/reviewer inspection retains diagnostic detail. Missing content evidence
+forces a download even if the remaining Drive metadata is identical.

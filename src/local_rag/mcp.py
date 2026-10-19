@@ -272,6 +272,19 @@ class MCPServer:
         self.allowed = {tool["name"] for tool in self.tools}
 
     def call(self, name: str, values: dict[str, Any]) -> Any:
+        result = self._call(name, values)
+        if self.mode == "reader" and isinstance(result, dict):
+            if name == "index_coverage":
+                result = _reader_coverage(result)
+            elif name == "search" and "coverage" in result:
+                result["coverage"] = _reader_coverage(result["coverage"])
+            elif name == "doctor":
+                for source in result.get("checks", {}).get("sync", {}).get("sources", []):
+                    if source.get("error"):
+                        source["error"] = "sync failed; ask an admin to inspect source health"
+        return result
+
+    def _call(self, name: str, values: dict[str, Any]) -> Any:
         if name not in self.allowed:
             raise ValueError(f"tool is not exposed in {self.mode} profile: {name}")
         multi = isinstance(self.service, MultiSourceRAG)
@@ -847,3 +860,22 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _reader_coverage(result: dict[str, Any]) -> dict[str, Any]:
+    safe = {"source", "source_id", "stable_ref", "status", "index_state", "stage"}
+    result["issues"] = [
+        {
+            **{key: value if key in safe else None for key, value in issue.items()},
+            "action": "Ask an admin to inspect and retry the affected source.",
+        }
+        for issue in result["issues"]
+    ]
+    for source in result["sources"]:
+        if source.get("source_error"):
+            source["source_error"] = {
+                "stage": "source",
+                "reason": "source_unavailable",
+                "action": "Ask an admin to inspect source health.",
+            }
+    return result

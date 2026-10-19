@@ -25,7 +25,14 @@ from local_rag.service import MultiSourceRAG
 
 
 def value(identifier, name, mime=GOOGLE_DOC, **extra):
-    return {"id": identifier, "name": name, "mimeType": mime, "version": "1", **extra}
+    return {
+        "id": identifier,
+        "name": name,
+        "mimeType": mime,
+        "version": "1",
+        "modifiedTime": f"2026-08-30T00:00:{int(extra.get('version', '1')):02d}Z",
+        **extra,
+    }
 
 
 class TreeDrive(GoogleDriveBackend):
@@ -399,9 +406,11 @@ def test_search_mcp_partial_zero_matches_restart_and_repair(make_service):
         assert bool(result["results"]) == (query == "searchmarker")
         assert result["coverage"]["status"] == "partial" and result["warnings"]
         issue = result["coverage"]["issues"][0]
-        assert issue["title"] == "Broken / tài liệu" and issue["file_id"] == "bad"
+        assert issue["title"] is None and issue["file_id"] is None
+        assert issue["stable_ref"] == "drive:bad"
         assert issue["index_state"] == "unindexed" and issue["stage"] == "download_export"
-        assert issue["reason"] == "DriveItemError" and issue["action"]
+        assert issue["reason"] is None and issue["action"]
+        assert "Broken / tài liệu" not in json.dumps(result, ensure_ascii=False)
         assert result["coverage"]["sources"][0]["failed_files"] == 1
     detail = reader.call("index_coverage", {"source": "fixture"})
     assert detail["total_issues"] == 1
@@ -530,12 +539,14 @@ def test_removed_folder_reconciles_descendants(make_service):
 
 
 def test_same_content_rename_refreshes_metadata_from_cached_artifact(make_service):
-    backend = TreeDrive({"root": [value("file", "Original")]})
+    backend = TreeDrive({"root": [value("file", "Original", modifiedTime="")]})
     service = make_service(backend)
     source_report(service, full=True)
     original = rows(service)["file"]
     backend.tree["root"] = [
-        value("file", "Renamed / nguyên tên", webViewLink="https://example.test/new")
+        value(
+            "file", "Renamed / nguyên tên", modifiedTime="", webViewLink="https://example.test/new"
+        )
     ]
     backend.fail_download.add("file")
     report = source_report(service, full=True)
@@ -629,3 +640,50 @@ def test_folder_metadata_only_and_v2_upgrade_do_not_download(make_service, nativ
         backend.tree["parent"][0]["md5Checksum"] = "new-checksum"
     source_report(service, full=True)
     assert backend.downloads == ["0"]
+
+
+def test_missing_content_evidence_always_downloads_even_with_same_metadata(make_service):
+    backend = TreeDrive({"root": [value("file", "Unknown", modifiedTime="")]})
+    service = make_service(backend)
+    source_report(service, full=True)
+    backend.content["file"] = b"updated unknown content"
+    report = source_report(service, full=True)
+    assert report["indexed"] == 1 and backend.downloads == ["file", "file"]
+    assert service.search("updated", mode="full_text")["results"]
+
+
+def test_drive_metadata_move_keeps_corrections_metadata_and_vectors(make_service, tmp_path):
+    from tests.helpers import write_text_pdf
+    from tests.test_optimizations import BatchEmbeddings
+
+    pdf = tmp_path / "fixture.pdf"
+    write_text_pdf(pdf, "Original uncertain page")
+    backend = TreeDrive(
+        {"root": [value("file", "scan.pdf", "application/pdf", md5Checksum="same")]}
+    )
+    backend.content["file"] = pdf.read_bytes()
+    service = make_service(backend)
+    service.embeddings = BatchEmbeddings()
+    source_report(service, full=True)
+    before = rows(service)["file"]
+    review = service.reviews()[0]
+    evidence = [{"path": "fixture:scan.pdf", "locator": "page:1", "quote": "source"}]
+    service.correct_review(review["id"], "Human corrected orchard", evidence, "reviewer")
+    service.add_metadata("fixture:scan.pdf", "tag", "kept", evidence, "reviewer")
+    source_report(service, full=True)
+    effective = rows(service)["file"]["effective_artifact_path"]
+    calls = service.embeddings.calls
+    backend.downloads.clear()
+    backend.tree = {
+        "root": [value("parent", "Moved", FOLDER_MIME)],
+        "parent": [value("file", "renamed.pdf", "application/pdf", md5Checksum="same")],
+    }
+    with patch.object(service.extractor, "extract", side_effect=AssertionError("no extraction")):
+        report = source_report(service, full=True)
+    assert report["metadata_updated"] == 1 and not backend.downloads
+    assert service.embeddings.calls == calls
+    after = rows(service)["file"]
+    assert after["id"] == before["id"] and after["effective_artifact_path"] == effective
+    assert service.db.review(review["id"])["status"] == "resolved"
+    assert service.read("drive:file")["text"] == "Human corrected orchard"
+    assert service.metadata("drive:file")["agent"][0]["key"] == "tag"

@@ -134,3 +134,9 @@ Search adds `media_type`, `modified_after` and `modified_before` (CLI uses hyphe
 MIME matches extracted media type exactly. Dates accept ISO 8601; dates or naive timestamps
 use UTC, bounds are exclusive. Drive uses its source modified time; unknown times do not match
 a date filter. All filters apply to lexical, semantic and duplicate-location results.
+
+Coverage now includes `indexed_documents` with stable refs for local and Drive records,
+`total_indexed_documents`, `next_document_offset`, and sanitized `local_sources` health.
+The existing issue pagination remains separate. Reader MCP coverage redacts failing filenames,
+paths and detailed reasons (fields are null); admin/reviewer inspection retains details.
+Reader doctor exposes a generic sync error. Use aggregate coverage to disclose incomplete results.

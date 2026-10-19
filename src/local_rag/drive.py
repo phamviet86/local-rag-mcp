@@ -514,6 +514,7 @@ class DriveAdapter:
             if (
                 current is None
                 or current["source_version"] != item.fingerprint
+                or not item.same_content(current["source_version"])
                 or force_index
                 or reextract
             ):
@@ -565,10 +566,7 @@ class DriveAdapter:
             current = known.get(item.id)
             self._stage = "index"
             try:
-                if current is not None and (
-                    current["source_version"] == item.fingerprint
-                    or item.same_content(current["source_version"])
-                ):
+                if current is not None and item.same_content(current["source_version"]):
                     metadata_changed = current["source_version"] != item.fingerprint
                     if metadata_changed:
                         self._update_metadata(item, current)
