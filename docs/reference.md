@@ -232,3 +232,8 @@ Use `source relocate NAME NEW_PATH` (CLI) or admin MCP `relocate_source(source,n
 to point an existing local source at a folder already moved by its operator. The durable job
 validates discovery, rewrites document/review paths transactionally, then reconciles. It never
 moves source files. Restart an existing watcher after relocation so its watched roots refresh.
+
+Search, read and metadata expose `stable_ref`: `drive:<fileId>` or
+`local:<immutable-source-id>:<document-id>`. Pass it as `path` to read/metadata after a move.
+`document_ref` retains its existing source-name/path meaning. Coverage issues include Drive
+stable refs. If one Drive ID is indexed in several sources, pass the source explicitly.

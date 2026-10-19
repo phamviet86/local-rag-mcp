@@ -117,7 +117,14 @@ def index_coverage(
             }
         )
         for item in [*failures, *listing]:
-            details.append({"source": record["name"], "source_id": record["id"], **item})
+            details.append(
+                {
+                    "source": record["name"],
+                    "source_id": record["id"],
+                    "stable_ref": f"drive:{item['file_id']}" if item.get("file_id") else None,
+                    **item,
+                }
+            )
     details.sort(key=lambda item: (item["source_id"], item.get("file_id", ""), item["stage"]))
     incomplete = any(item["status"] != "complete" for item in summaries)
     return {

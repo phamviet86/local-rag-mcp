@@ -207,6 +207,30 @@ class Database:
             )
 
     def resolve_document(self, path: str, source: str | None = None) -> sqlite3.Row:
+        stable_sql = ""
+        stable_values: list[Any] = []
+        if path.startswith("drive:"):
+            stable_sql = "s.kind='google_drive' AND d.external_id=?"
+            stable_values = [path[6:]]
+        elif path.startswith("local:") and len(path.split(":")) == 3:
+            _, source_id, identifier = path.split(":")
+            if identifier.isdigit():
+                stable_sql = "s.kind='local' AND d.source_id=? AND d.id=?"
+                stable_values = [source_id, int(identifier)]
+        if stable_sql:
+            if source:
+                stable_sql += " AND (s.id=? OR s.name=?)"
+                stable_values.extend((source, source))
+            with self.connect() as connection:
+                matches = connection.execute(
+                    "SELECT d.*,s.name source_name,s.kind source_kind FROM documents d "
+                    "JOIN sources s ON s.id=d.source_id WHERE " + stable_sql,
+                    stable_values,
+                ).fetchall()
+            if len(matches) == 1:
+                return cast(sqlite3.Row, matches[0])
+            if len(matches) > 1:
+                raise ValueError("stable reference is ambiguous; provide source")
         if source is None and ":" in path:
             possible_source, relative_path = path.split(":", 1)
             try:
@@ -428,6 +452,7 @@ class Database:
                 (document["id"], document["id"]),
             ).fetchall()
         return {
+            "stable_ref": stable_ref(document),
             "automatic": json.loads(document["metadata_json"]),
             "agent": [_row_json(row, ("value_json", "evidence_json")) for row in entries],
             "relationships": [_row_json(row, ("evidence_json",)) for row in relationships],
@@ -546,3 +571,11 @@ def _execute_script(connection: sqlite3.Connection, script: str) -> None:
             statement = ""
     if statement.strip():
         raise RuntimeError("incomplete SQL migration statement")
+
+
+def stable_ref(document: Any) -> str:
+    if document["source_kind"] == "google_drive":
+        return f"drive:{document['external_id']}"
+    keys = set(document.keys())
+    identifier = document["document_id"] if "document_id" in keys else document["id"]
+    return f"local:{document['source_id']}:{identifier}"

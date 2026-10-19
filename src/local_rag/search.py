@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .db import Database
+from .db import Database, stable_ref
 from .embeddings import EmbeddingProvider, cache_identity
 
 SEARCH_MODES = ("full_text", "semantic", "hybrid")
@@ -85,7 +85,8 @@ class SearchEngine:
         with self.db.connect() as connection:
             chunks = connection.execute(
                 f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
-                           d.external_id,d.source_url,s.name source_name,s.kind source_kind
+                           d.source_id,d.external_id,d.source_url,
+                           s.name source_name,s.kind source_kind
                     FROM chunks_fts JOIN chunks c ON c.id=CAST(chunks_fts.chunk_id AS INTEGER)
                     JOIN documents d ON d.id=c.document_id
                     JOIN sources s ON s.id=d.source_id
@@ -96,7 +97,8 @@ class SearchEngine:
             metadata = connection.execute(
                 f"""SELECT m.rowid metadata_id,m.content,m.kind,m.provenance,
                            d.id document_id,d.relative_path,d.title,d.content_hash,d.metadata_json,
-                           d.external_id,d.source_url,s.name source_name,s.kind source_kind
+                           d.source_id,d.external_id,d.source_url,
+                           s.name source_name,s.kind source_kind
                     FROM metadata_fts m JOIN documents d ON d.id=CAST(m.document_id AS INTEGER)
                     JOIN sources s ON s.id=d.source_id
                     WHERE metadata_fts MATCH ? AND s.enabled=1 {filter_sql}
@@ -135,7 +137,8 @@ class SearchEngine:
         with self.db.connect() as connection:
             rows = connection.execute(
                 f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
-                           d.external_id,d.source_url,s.name source_name,s.kind source_kind,
+                           d.source_id,d.external_id,d.source_url,
+                           s.name source_name,s.kind source_kind,
                            v.vector_json
                     FROM chunks c JOIN documents d ON d.id=c.document_id
                     JOIN sources s ON s.id=d.source_id
@@ -225,6 +228,7 @@ class SearchEngine:
             "source_kind": row["source_kind"],
             "path": row["relative_path"],
             "document_ref": f"{row['source_name']}:{row['relative_path']}",
+            "stable_ref": stable_ref(row),
             "title": row["title"],
             "text": (f"{row['kind']}: {row['content']}" if is_metadata else row["text"])[:1200],
             "score": round(score, 6),
@@ -273,6 +277,7 @@ class SearchEngine:
         source_kind = str(document["source_kind"])
         return {
             "document_ref": f"{source_name}:{document['relative_path']}",
+            "stable_ref": stable_ref(document),
             "source": source_name,
             "source_kind": source_kind,
             "path": document["relative_path"],

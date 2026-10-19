@@ -113,3 +113,30 @@ def test_relocate_runs_as_admin_job_and_keeps_ids(tmp_path: Path):
     result = service.start_index_job("relocate", "notes", str(root), background=False)
     assert result["state"] == "error"
     assert service.registry.get("notes").locator == str(new)
+
+
+def test_stable_reference_survives_move_and_relocate(tmp_path: Path):
+    import pytest
+
+    root, home = tmp_path / "root", tmp_path / "home"
+    root.mkdir()
+    (root / "note.txt").write_text("orchard identity")
+    service = MultiSourceRAG(Settings(root=home, home=home))
+    source = service.add_local_source("notes", root)
+    service.reconcile()
+    hit = service.search("orchard", mode="full_text")["results"][0]
+    ref = hit["stable_ref"]
+    assert ref.startswith(f"local:{source['id']}:")
+    (root / "note.txt").rename(root / "moved.txt")
+    service.reconcile()
+    assert service.read(ref)["path"] == "moved.txt"
+    assert service.metadata(ref)["stable_ref"] == ref
+    with pytest.raises(ValueError):
+        service.read(ref, source="another-source")
+    new = tmp_path / "relocated"
+    root.rename(new)
+    assert (
+        service.start_index_job("relocate", "notes", str(new), background=False)["state"]
+        == "complete"
+    )
+    assert service.read(ref)["text"] == "orchard identity"
