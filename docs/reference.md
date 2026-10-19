@@ -214,3 +214,6 @@ Vectors are JSON arrays scored in process, suitable for a personal or team corpu
 millions of chunks. SQLite remains the intentional shared local engine; no external vector database
 is required. Live Google OAuth/Drive behavior requires operator credentials and network access.
 Windows is not a supported deployment target yet.
+
+Local reconciliation aborts without deleting indexed data when discovery cannot read the root
+or a subtree. Source health records a sanitized error; restore access and retry reconciliation.

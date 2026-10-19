@@ -81,3 +81,6 @@ coalesce and conflicting writes can be rejected.
 The optional OS user service is an operator-controlled mechanism. Agents must never install,
 start, stop, or uninstall it without explicit operator direction. It does not inherit interactive
 remote-embedding credentials by default.
+
+Local reconciliation aborts without deleting indexed data when discovery cannot read the root
+or a subtree. Source health records a sanitized error; restore access and retry reconciliation.

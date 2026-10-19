@@ -82,7 +82,7 @@ class JobAndServiceTests(unittest.TestCase):
         )
         self.assertEqual(file_job["state"], "complete")
         failed = self.service.start_index_job("reindex", "docs", "missing.txt", background=False)
-        self.assertEqual(failed["state"], "complete")
+        self.assertEqual(failed["state"], "error")
         self.assertEqual(len(self.service.list_jobs()), 5)
 
     def test_new_files_report_live_intermediate_progress(self) -> None:

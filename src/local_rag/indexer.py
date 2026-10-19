@@ -70,28 +70,23 @@ class Indexer:
         yield from self._walk(base)
 
     def _walk(self, directory: Path) -> Iterator[FileSnapshot]:
-        try:
-            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
-        except (FileNotFoundError, NotADirectoryError, PermissionError):
-            return
+        with os.scandir(directory) as iterator:
+            entries = sorted(iterator, key=lambda entry: entry.name)
         for entry in entries:
             candidate = Path(entry.path)
-            try:
-                if entry.is_symlink():
-                    if entry.is_file(follow_symlinks=True):
-                        snapshot = self.snapshot(candidate)
-                        if snapshot is not None:
-                            yield snapshot
-                    continue
-                if entry.is_dir(follow_symlinks=False):
-                    if not self.settings.excluded(candidate):
-                        yield from self._walk(candidate)
-                elif entry.is_file(follow_symlinks=False):
+            if entry.is_symlink():
+                if entry.is_file(follow_symlinks=True):
                     snapshot = self.snapshot(candidate)
                     if snapshot is not None:
                         yield snapshot
-            except (FileNotFoundError, PermissionError, OSError):
                 continue
+            if entry.is_dir(follow_symlinks=False):
+                if not self.settings.excluded(candidate):
+                    yield from self._walk(candidate)
+            elif entry.is_file(follow_symlinks=False):
+                snapshot = self.snapshot(candidate)
+                if snapshot is not None:
+                    yield snapshot
 
     def snapshot(self, path: Path) -> FileSnapshot | None:
         resolved = path.resolve()
@@ -122,7 +117,16 @@ class Indexer:
         present: set[str] = set()
         prepared: list[PreparedDocument] = []
         stat_updates: list[tuple[int, FileSnapshot, dict[str, Any]]] = []
-        snapshots = list(self.files(target))
+        try:
+            snapshots = list(self.files(target))
+        except OSError as exc:
+            # Incomplete discovery is never evidence of deletion. Keep reader-visible
+            # source health free of filenames and filesystem error details.
+            error = f"local discovery incomplete: {type(exc).__name__}"
+            self.db.update_source_sync(self.source_id, None, error)
+            report["errors"].append(error)
+            return report
+        self.db.update_source_sync(self.source_id, None, None)
         report["discovered"] = len(snapshots)
         processed = searchable = 0
         _progress(progress, "discovering", len(snapshots), processed, searchable, len(snapshots))
