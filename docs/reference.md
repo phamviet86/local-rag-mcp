@@ -215,6 +215,8 @@ millions of chunks. SQLite remains the intentional shared local engine; no exter
 is required. Live Google OAuth/Drive behavior requires operator credentials and network access.
 Windows is not a supported deployment target yet.
 
+## v0.10.0 source safety and retrieval additions
+
 Local reconciliation aborts without deleting indexed data when discovery cannot read the root
 or a subtree. Source health records a sanitized error; restore access and retry reconciliation.
 

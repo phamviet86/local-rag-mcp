@@ -3,7 +3,16 @@
 All notable changes to this project are documented in this file. This project follows
 [Semantic Versioning](https://semver.org/) while it remains pre-1.0.
 
-## [Unreleased]
+## [Unreleased] — 0.10.0
+
+- Abort incomplete local discovery without deleting indexed state; detect unique content moves.
+- Split Drive content/location keys with v2 compatibility and metadata-only updates.
+- Add admin source relocation through the durable queue, stable refs, hit offsets and read-around.
+- Rebuild Vietnamese FTS without re-embedding; diversify hits and preserve duplicate citations.
+- Record DOCX headings with opt-in document order; add optional float32 matrix scoring and filters.
+- Preserve populated v0.9.0 documents, vectors and OCR revisions during in-place migrations.
+- Redact failure filenames/details from reader MCP coverage and expose local source health.
+
 
 ## [0.9.0] - 2026-09-13
 

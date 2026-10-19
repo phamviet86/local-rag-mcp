@@ -6,6 +6,12 @@ text, metadata, citations, OCR reviews, and optional vector caches below `~/.loc
 
 It is a standalone service: use its CLI or MCP server, not its internal Python modules.
 
+## Development version
+
+This checkout prepares **v0.10.0**: safe source moves, stable citations, Vietnamese search,
+and richer retrieval context. See [upgrade notes](docs/releases/v0.10.0.md).
+It has not been published by this change; the released installation examples below remain v0.9.0.
+
 ## Release status and identity
 
 **v0.9.0** adds agent setup and retrieval skills. Download its wheel and source archive only from the

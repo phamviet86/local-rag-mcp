@@ -249,3 +249,8 @@ destinations and verifies fixture local-folder search/read through the real SDK 
 `2026-07-28` discovery and legacy `2025-11-25` initialization. `scripts/verify_mcp_stdio.py` additionally
 checks the initialized empty reader state and JSON-RPC/tool error boundary. Validate both packaged
 skills with the Codex skill-creator `quick_validate.py` before release.
+
+## Preparing a v0.9.0 to v0.10.0 upgrade
+
+See [v0.10.0 upgrade and rollback](releases/v0.10.0.md#upgrade-and-rollback).
+This checkout does not publish a release or upgrade any existing deployment.

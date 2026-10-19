@@ -126,3 +126,9 @@ cho tiến trình local đáng tin cậy. Đọc [docs/agents.md](docs/agents.md
 [SECURITY.md](SECURITY.md) trước khi cho agent truy cập dữ liệu.
 
 See [Drive sync identity, retries, coverage and isolated trial](docs/drive-sync.md).
+
+## Phiên bản phát triển 0.10.0
+
+Checkout này bổ sung bảo toàn dữ liệu khi đổi vị trí nguồn, định danh trích dẫn ổn định,
+tìm kiếm tiếng Việt không dấu và ngữ cảnh kết quả. Xem [hướng dẫn nâng cấp](docs/releases/v0.10.0.md).
+Bản thay đổi chưa được phát hành; các ví dụ tải bản phát hành 0.9.0 phía trên vẫn giữ nguyên.

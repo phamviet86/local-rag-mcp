@@ -61,6 +61,8 @@ class Indexer:
         self.source_name = source_name
 
     def files(self, target: Path | None = None) -> Iterator[FileSnapshot]:
+        if not stat.S_ISDIR(self.settings.root.stat().st_mode):
+            raise NotADirectoryError("local source root must be a directory")
         base = (target or self.settings.root).resolve()
         if not self.settings.contains(base) or self.settings.excluded(base):
             raise ValueError("target is outside the configured root or excluded")
@@ -132,7 +134,6 @@ class Indexer:
             self.db.update_source_sync(self.source_id, None, error)
             report["errors"].append(error)
             return report
-        self.db.update_source_sync(self.source_id, None, None)
         report["discovered"] = len(snapshots)
         present = {str(snapshot.path) for snapshot in snapshots}
         missing = set(self._missing_document_ids(rows, present, target))
@@ -230,9 +231,10 @@ class Indexer:
             report["warnings"].append(
                 f"{missing_ocr} PDF page(s) require OCR and were added to the review queue"
             )
-        self.db.update_source_sync(
-            self.source_id, None, "local file indexing failed" if report["errors"] else None
-        )
+        if report["errors"] or target is None:
+            self.db.update_source_sync(
+                self.source_id, None, "local file indexing failed" if report["errors"] else None
+            )
         return report
 
     def _classify(

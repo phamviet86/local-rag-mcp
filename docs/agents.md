@@ -44,7 +44,7 @@ Profiles expose capabilities only; they are not authentication or a sandbox. Giv
 
 1. Start with `doctor`, `status`, and `sources`.
 2. If sources are enabled, use global `search` or strict `source`/`folder` filters.
-3. Use the returned `document_ref` in `read`.
+3. Prefer the returned `stable_ref` in `read`; legacy `document_ref` remains supported.
 4. Preserve returned citation/provenance fields: source, relative path, URL where present, content
    hash/revision, page, and locator.
 
@@ -81,6 +81,8 @@ coalesce and conflicting writes can be rejected.
 The optional OS user service is an operator-controlled mechanism. Agents must never install,
 start, stop, or uninstall it without explicit operator direction. It does not inherit interactive
 remote-embedding credentials by default.
+
+## v0.10.0 source safety and retrieval additions
 
 Local reconciliation aborts without deleting indexed data when discovery cannot read the root
 or a subtree. Source health records a sanitized error; restore access and retry reconciliation.

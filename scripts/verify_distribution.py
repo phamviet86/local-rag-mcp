@@ -24,6 +24,8 @@ REQUIRED_SDIST_FILES = {
     "docs/deployment.md",
     "docs/reference.md",
     "docs/setup.md",
+    "docs/releases/v0.10.0.md",
+    "tests/fixtures/v090-populated.json",
     "pyproject.toml",
     "scripts/verify_agent_install.py",
     "scripts/verify_distribution.py",
@@ -40,7 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist-dir", type=Path, default=Path("dist"))
     parser.add_argument("--distribution", default="phamviet-local-rag-mcp")
-    parser.add_argument("--version", default="0.9.0")
+    parser.add_argument("--version", default="0.10.0")
     return parser
 
 

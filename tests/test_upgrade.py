@@ -40,7 +40,13 @@ def test_incomplete_local_discovery_never_deletes(tmp_path: Path):
     root.rename(moved)
     assert service.reconcile()["sources"][0]["errors"]
     assert service.status()["documents"] == 1
+    root.write_text("a file cannot replace a source directory")
+    assert service.reconcile()["sources"][0]["errors"]
+    assert service.status()["documents"] == 1
+    root.unlink()
     moved.rename(root)
+    assert not service.reconcile("notes", target="nested/note.txt")["sources"][0]["errors"]
+    assert service.registry.get("notes").last_error is not None
     assert not service.reconcile()["sources"][0]["errors"]
     assert service.registry.get("notes").last_error is None
 

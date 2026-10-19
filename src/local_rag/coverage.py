@@ -107,7 +107,9 @@ def index_coverage(
             "has_error": bool(record["last_error"]),
         }
         for record in db.sources(enabled=True)
-        if record["kind"] == "local" and (not source or source in {record["id"], record["name"]})
+        if record["kind"] == "local"
+        and not (folder and folder.startswith("id:"))
+        and (not source or source in {record["id"], record["name"]})
     ]
     summaries: list[dict[str, Any]] = []
     details: list[dict[str, Any]] = []

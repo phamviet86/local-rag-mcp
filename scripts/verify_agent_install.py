@@ -58,10 +58,26 @@ async def verify(executable: Path, home: Path, env: dict[str, str], modern: bool
         await call("doctor", {})
         await call("sources", {})
         search = await call(
-            "search", {"query": "orchard", "source": "fixture", "mode": "full_text"}
+            "search",
+            {
+                "query": "orchard",
+                "source": "fixture",
+                "mode": "full_text",
+                "per_document": 1,
+                "media_type": "text/markdown",
+                "modified_after": "2000-01-01",
+            },
         )
         assert search["results"] and "coverage" in search
-        document = await call("read", {"path": search["results"][0]["document_ref"]})
+        hit = search["results"][0]
+        assert hit["stable_ref"].startswith("local:") and hit["chunk_ordinal"] == 0
+        assert hit["indexed_at"] and hit["source_modified_at"] and hit["locations"]
+        document = await call(
+            "read", {"path": hit["stable_ref"], "around": hit["start_char"], "window": 2000}
+        )
+        assert document["stable_ref"] == hit["stable_ref"]
+        metadata = await call("metadata", {"path": hit["stable_ref"]})
+        assert metadata["stable_ref"] == hit["stable_ref"]
         assert "orchard" in json.dumps(document).lower()
         assert document.get("provenance")
         try:
