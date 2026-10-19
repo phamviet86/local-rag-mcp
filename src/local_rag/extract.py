@@ -10,18 +10,24 @@ from .ocr_runtime import OCRRuntimeManager
 
 class Extractor:
     def __init__(
-        self, ocr_runtime: OCRRuntimeManager, *, ocr_enabled: bool = True, ocr_offline: bool = False
+        self,
+        ocr_runtime: OCRRuntimeManager,
+        *,
+        ocr_enabled: bool = True,
+        ocr_offline: bool = False,
+        docx_document_order: bool = False,
     ):
         self.ocr_runtime = ocr_runtime
         self.ocr_enabled = ocr_enabled
         self.ocr_offline = ocr_offline
+        self.docx_document_order = docx_document_order
 
     def extract(self, path: Path) -> ExtractedDocument:
         suffix = path.suffix.lower()
         if suffix in {".txt", ".md", ".markdown"}:
             return _text(path, markdown=suffix != ".txt")
         if suffix == ".docx":
-            return _docx(path)
+            return _docx(path, self.docx_document_order)
         if suffix == ".xlsx":
             return _xlsx(path)
         if suffix == ".pptx":
@@ -147,20 +153,44 @@ def _text(path: Path, markdown: bool) -> ExtractedDocument:
     return ExtractedDocument(builder.text, builder.spans, media)
 
 
-def _docx(path: Path) -> ExtractedDocument:
+def _docx(path: Path, document_order: bool = False) -> ExtractedDocument:
+    import re
+
     from docx import Document
+    from docx.text.paragraph import Paragraph
 
     document, builder = Document(str(path)), _Builder()
-    for index, paragraph in enumerate(document.paragraphs, 1):
-        builder.add(paragraph.text, "docx_paragraph", f"paragraph:{index}")
-    for table_index, table in enumerate(document.tables, 1):
-        for row_index, row in enumerate(table.rows, 1):
-            for column_index, cell in enumerate(row.cells, 1):
-                builder.add(
-                    cell.text,
-                    "docx_cell",
-                    f"table:{table_index}/row:{row_index}/column:{column_index}",
-                )
+    headings: dict[int, str] = {}
+    blocks: list[tuple[str, Any, int, list[str]]] = []
+    paragraph_index = table_index = 0
+    for block in document.iter_inner_content():
+        if isinstance(block, Paragraph):
+            paragraph_index += 1
+            style = block.style.name if block.style is not None else ""
+            match = re.fullmatch(r"Heading (\d+)", style or "", re.IGNORECASE)
+            if match:
+                level = int(match[1])
+                headings = {key: value for key, value in headings.items() if key < level}
+                headings[level] = block.text.strip()
+            blocks.append(("paragraph", block, paragraph_index, list(headings.values())))
+        else:
+            table_index += 1
+            blocks.append(("table", block, table_index, list(headings.values())))
+    if not document_order:
+        blocks.sort(key=lambda item: item[0] != "paragraph")
+    for kind, block, index, heading_path in blocks:
+        metadata = {"heading_path": heading_path}
+        if kind == "paragraph":
+            builder.add(block.text, "docx_paragraph", f"paragraph:{index}", metadata)
+        else:
+            for row_index, row in enumerate(block.rows, 1):
+                for column_index, cell in enumerate(row.cells, 1):
+                    builder.add(
+                        cell.text,
+                        "docx_cell",
+                        f"table:{index}/row:{row_index}/column:{column_index}",
+                        metadata,
+                    )
     return ExtractedDocument(builder.text, builder.spans, _media(path))
 
 

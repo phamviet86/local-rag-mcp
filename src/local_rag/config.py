@@ -63,11 +63,14 @@ class Settings:
     openai_base_url: str = "https://openrouter.ai/api/v1"
     openai_api_key: str | None = None
     ocr_mode: str = "unconfigured"
+    docx_document_order: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "root", self.root.expanduser().resolve())
         object.__setattr__(self, "home", self.home.expanduser().resolve())
         object.__setattr__(self, "extensions", frozenset(_extension(e) for e in self.extensions))
+        if not isinstance(self.docx_document_order, bool):
+            raise ValueError("docx_document_order must be a boolean")
         if self.chunk_chars < 100 or not 0 <= self.chunk_overlap < self.chunk_chars:
             raise ValueError("invalid chunk size or overlap")
         if self.embedding_provider not in {"none", "local", "openai"}:
@@ -125,6 +128,7 @@ class Settings:
             "embedding_model": self.embedding_model,
             "openai_base_url": self.openai_base_url,
             "ocr_mode": self.ocr_mode,
+            "docx_document_order": self.docx_document_order,
         }
         temporary = self.config_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -171,6 +175,7 @@ class Settings:
             or embedding.get("openai_api_key")
             or None,
             ocr_mode=str(payload.get("ocr_mode", "unconfigured")),
+            docx_document_order=payload.get("docx_document_order", False),
         )
 
     def contains(self, path: Path) -> bool:

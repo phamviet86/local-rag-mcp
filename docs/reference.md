@@ -251,3 +251,9 @@ for context. Window is total characters centered on the hit, clamped at text bou
 Search accepts `per_document` (CLI `--per-document`, default 3, range 1..100). It caps primary
 hits per document and collapses identical chunk hashes. Each content hit includes `locations`
 with all matching enabled, in-scope document positions and citations, including copied files.
+
+DOCX extraction records heading paths without changing default paragraph-then-table text.
+For existing files, explicit `reindex --source NAME --reextract` refreshes provenance. To emit
+tables in document order, set `docx_document_order: true` in the operator-managed config.json,
+restart the process and explicitly reextract affected DOCX files. This opt-in changes text and
+may embed changed chunks. Its extraction cache is separate from the default representation.

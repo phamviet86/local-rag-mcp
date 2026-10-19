@@ -680,7 +680,12 @@ class Indexer:
     def _extract_cached(
         self, path: Path, content_hash: str, use_cache: bool = True
     ) -> tuple[ExtractedDocument, Path]:
-        artifact = self.settings.extracted_dir / f"{content_hash}.json"
+        variant = (
+            ".docx-order"
+            if path.suffix.lower() == ".docx" and self.settings.docx_document_order
+            else ""
+        )
+        artifact = self.settings.extracted_dir / f"{content_hash}{variant}.json"
         if use_cache and artifact.exists():
             payload = json.loads(artifact.read_text(encoding="utf-8"))
             return _document_from_artifact(payload), artifact

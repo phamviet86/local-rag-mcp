@@ -201,3 +201,26 @@ def test_diversify_and_collapse_keep_scoped_locations(tmp_path: Path):
     assert all(
         location["path"] == "one.txt" for hit in results for location in hit.get("locations", [])
     )
+
+
+def test_docx_headings_keep_legacy_text_and_order_is_opt_in(tmp_path: Path):
+    from docx import Document
+
+    from local_rag.extract import _docx
+    from local_rag.indexer import _chunks
+
+    document = Document()
+    document.add_heading("Policy", level=1)
+    document.add_paragraph("before table")
+    document.add_table(rows=1, cols=1).cell(0, 0).text = "table contents"
+    document.add_heading("Detail", level=2)
+    document.add_paragraph("after table")
+    path = tmp_path / "sample.docx"
+    document.save(path)
+    legacy = _docx(path)
+    assert legacy.text == "Policy\n\nbefore table\n\nDetail\n\nafter table\n\ntable contents"
+    assert legacy.spans[-1].metadata["heading_path"] == ["Policy"]
+    assert legacy.spans[-2].metadata["heading_path"] == ["Policy", "Detail"]
+    ordered = _docx(path, True)
+    assert ordered.text.index("table contents") < ordered.text.index("after table")
+    assert _chunks(legacy, 1200, 150)[0].chunk_hash != _chunks(ordered, 1200, 150)[0].chunk_hash
