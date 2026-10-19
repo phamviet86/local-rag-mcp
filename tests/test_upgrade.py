@@ -43,3 +43,42 @@ def test_incomplete_local_discovery_never_deletes(tmp_path: Path):
     moved.rename(root)
     assert not service.reconcile()["sources"][0]["errors"]
     assert service.registry.get("notes").last_error is None
+
+
+def test_local_moves_preserve_identity_and_do_not_extract(tmp_path: Path):
+    root, home = tmp_path / "root", tmp_path / "data"
+    root.mkdir()
+    folder = root / "old"
+    folder.mkdir()
+    for i in range(2):
+        (folder / f"note{i}.txt").write_text(f"orchard {i}")
+    service = MultiSourceRAG(Settings(root=home, home=home))
+    source = service.add_local_source("notes", root)
+    service.reconcile()
+    original = service.db.document_snapshot(source["id"])
+    with service.db.transaction() as connection:
+        connection.execute(
+            """INSERT INTO relationships
+            (source_document_id,target_document_id,relation,evidence_json,actor)
+            VALUES(?,?,'related','[]','test')""",
+            (original[0]["id"], original[1]["id"]),
+        )
+    folder.rename(root / "new")
+    with patch.object(service.extractor, "extract", side_effect=AssertionError("no extraction")):
+        report = service.reconcile()["sources"][0]
+    assert report["moved"] == 2 and report["indexed"] == report["removed"] == 0
+    updated = service.db.document_snapshot(source["id"])
+    assert {row["id"] for row in updated} == {row["id"] for row in original}
+    assert all(row["relative_path"].startswith("new/") for row in updated)
+    with service.db.connect() as connection:
+        assert connection.execute("SELECT count(*) FROM relationships").fetchone()[0] == 1
+    # Editing during a move cannot transfer unrelated derived state.
+    (root / "new/note0.txt").rename(root / "changed.txt")
+    (root / "changed.txt").write_text("different content")
+    report = service.reconcile()["sources"][0]
+    assert report["moved"] == 0 and report["indexed"] == report["removed"] == 1
+    (root / "copy.txt").write_text((root / "changed.txt").read_text())
+    service.reconcile()
+    (root / "copy.txt").rename(root / "copy-moved.txt")
+    report = service.reconcile()["sources"][0]
+    assert report["moved"] == 0 and report["indexed"] == report["removed"] == 1

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,6 +109,7 @@ class Indexer:
             "unchanged": 0,
             "stat_refreshed": 0,
             "removed": 0,
+            "moved": 0,
             "embedded": 0,
             "warnings": [],
             "errors": [],
@@ -128,9 +130,37 @@ class Indexer:
             return report
         self.db.update_source_sync(self.source_id, None, None)
         report["discovered"] = len(snapshots)
+        present = {str(snapshot.path) for snapshot in snapshots}
+        missing = set(self._missing_document_ids(rows, present, target))
+        candidates: dict[tuple[int, str], list[Any]] = defaultdict(list)
+        counts = Counter((row["size"], row["content_hash"]) for row in rows)
+        for row in rows:
+            if row["id"] in missing:
+                candidates[(row["size"], row["content_hash"])].append(row)
+        new_files: dict[tuple[int, str], list[FileSnapshot]] = defaultdict(list)
+        sizes = {key[0] for key in candidates}
+        try:
+            for snapshot in snapshots:
+                if str(snapshot.path) not in documents and snapshot.size in sizes:
+                    new_files[(snapshot.size, _file_hash(snapshot.path))].append(snapshot)
+        except OSError as exc:
+            error = f"local move discovery incomplete: {type(exc).__name__}"
+            self.db.update_source_sync(self.source_id, None, error)
+            report["errors"].append(error)
+            return report
+        moves = [
+            (candidates[key][0], files[0])
+            for key, files in new_files.items()
+            if len(files) == 1 and len(candidates.get(key, [])) == 1 and counts[key] == 1
+        ]
+        moved_paths = {str(snapshot.path) for _, snapshot in moves}
+        for row, _ in moves:
+            missing.remove(row["id"])
         processed = searchable = 0
         _progress(progress, "discovering", len(snapshots), processed, searchable, len(snapshots))
         for snapshot in snapshots:
+            if str(snapshot.path) in moved_paths:
+                continue
             present.add(str(snapshot.path))
             current = documents.get(str(snapshot.path))
             try:
@@ -156,9 +186,11 @@ class Indexer:
                 searchable,
                 len(snapshots) - processed,
             )
-        removed_ids = self._missing_document_ids(rows, present, target)
+        removed_ids = sorted(missing)
         try:
             with self.db.transaction() as connection:
+                for row, snapshot in moves:
+                    self._update_path(connection, row, snapshot)
                 for document_id, snapshot, metadata in stat_updates:
                     connection.execute(
                         "UPDATE documents SET size=?,modified_ns=?,metadata_json=? WHERE id=?",
@@ -174,6 +206,7 @@ class Indexer:
         except Exception as exc:
             report["errors"].append(f"index transaction: {exc}")
             return report
+        report["moved"] = len(moves)
         searchable = len(snapshots) - len(report["errors"])
         _progress(progress, "committed", len(snapshots), processed, searchable, 0)
         embedding = self.embed_pending(progress)
@@ -519,35 +552,38 @@ class Indexer:
             changed = self.index_file(destination)
             self.remove(source)
             return changed
-        relative = destination.relative_to(self.settings.root).as_posix()
-        metadata = json.loads(source_row["metadata_json"])
-        metadata.update({"size": snapshot.size, "modified_ns": snapshot.modified_ns})
         with self.db.transaction() as connection:
-            connection.execute(
-                """UPDATE documents SET path=?,relative_path=?,external_id=?,size=?,
-                   modified_ns=?,metadata_json=?
-                   WHERE id=?""",
-                (
-                    str(destination),
-                    relative,
-                    relative,
-                    snapshot.size,
-                    snapshot.modified_ns,
-                    json.dumps(metadata),
-                    source_row["id"],
-                ),
-            )
-            connection.execute(
-                """UPDATE chunks_fts SET relative_path=?
-                   WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)""",
-                (relative, source_row["id"]),
-            )
-            connection.execute(
-                "UPDATE reviews SET path=? WHERE document_id=?",
-                (str(destination), source_row["id"]),
-            )
-            self.db._refresh_metadata_index(connection, int(source_row["id"]))
+            self._update_path(connection, source_row, snapshot)
         return True
+
+    def _update_path(self, connection: Any, row: Any, snapshot: FileSnapshot) -> None:
+        relative = snapshot.path.relative_to(self.settings.root).as_posix()
+        metadata = json.loads(row["metadata_json"])
+        metadata.update({"size": snapshot.size, "modified_ns": snapshot.modified_ns})
+        connection.execute(
+            """UPDATE documents SET path=?,relative_path=?,external_id=?,size=?,
+               modified_ns=?,metadata_json=?
+               WHERE id=?""",
+            (
+                str(snapshot.path),
+                relative,
+                relative,
+                snapshot.size,
+                snapshot.modified_ns,
+                json.dumps(metadata),
+                row["id"],
+            ),
+        )
+        connection.execute(
+            """UPDATE chunks_fts SET relative_path=?
+               WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id=?)""",
+            (relative, row["id"]),
+        )
+        connection.execute(
+            "UPDATE reviews SET path=? WHERE document_id=?",
+            (str(snapshot.path), row["id"]),
+        )
+        self.db._refresh_metadata_index(connection, int(row["id"]))
 
     def correct_review(
         self,

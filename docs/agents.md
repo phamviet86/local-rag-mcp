@@ -90,3 +90,7 @@ Drive sync now reports `metadata_updated` for location-only changes. Content key
 Matching content updates paths and identity without extraction or downloads, retaining derived state.
 Missing content evidence or changed MIME falls back to download; changed native modified time also
 falls back safely. No live Drive rename assumption has been verified by the offline test suite.
+
+Local reconcile reports `moved` for unique size/hash matches within a source. Matching runs before
+extraction and retains document IDs, corrections, metadata and relationships. Duplicate content
+or a move with an edit uses normal indexing/deletion; identity cannot be inferred safely.
