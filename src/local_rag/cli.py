@@ -115,6 +115,8 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     read.add_argument("--source")
     read.add_argument("--start", type=int, default=0)
     read.add_argument("--length", type=int, default=12000)
+    read.add_argument("--around", type=int)
+    read.add_argument("--window", type=int, default=2000)
     commands.add_parser("status")
     doctor = commands.add_parser("doctor", help="run actionable readiness checks")
     doctor.add_argument("--json", action="store_true", help="emit the stable JSON contract")
@@ -311,7 +313,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif command == "search":
         output = service.search(args.query, args.limit, args.source, args.folder, args.mode)
     elif command == "read":
-        output = service.read(args.path, args.source, args.start, args.length)
+        output = service.read(
+            args.path, args.source, args.start, args.length, args.around, args.window
+        )
     elif command == "status":
         output = service.status()
     elif command == "doctor":

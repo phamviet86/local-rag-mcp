@@ -155,3 +155,25 @@ def test_vietnamese_fts_keeps_original_text_and_vectors(tmp_path: Path):
     evidence = [{"path": "notes:note.txt", "quote": "hợp"}]
     service.add_metadata("notes:note.txt", "tag", "đặc biệt", evidence, "test")
     assert service.search("dac", mode="full_text")["results"]
+
+
+def test_hit_offsets_and_read_around_match_effective_text(tmp_path: Path):
+    from local_rag.mcp import MCPServer
+
+    root, home = tmp_path / "root", tmp_path / "home"
+    root.mkdir()
+    (root / "note.txt").write_text("orchard harvest " * 100)
+    service = MultiSourceRAG(Settings(root=home, home=home, chunk_chars=100, chunk_overlap=10))
+    service.add_local_source("notes", root)
+    service.reconcile()
+    for hit in service.search("orchard", mode="full_text")["results"]:
+        if hit["chunk_ordinal"] is None:
+            continue
+        text = service.read(hit["stable_ref"])["text"]
+        assert text[hit["start_char"] : hit["end_char"]] == hit["text"]
+        assert hit["indexed_at"] and hit["source_modified_at"]
+        expanded = MCPServer(service).call(
+            "read", {"path": hit["stable_ref"], "around": hit["start_char"], "window": 150}
+        )
+        assert expanded["text"] == text[expanded["start"] : expanded["end"]]
+        assert expanded["start"] <= hit["start_char"] < expanded["end"]

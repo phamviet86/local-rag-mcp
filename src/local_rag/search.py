@@ -6,6 +6,7 @@ import re
 import threading
 from collections import OrderedDict
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -85,7 +86,7 @@ class SearchEngine:
         with self.db.connect() as connection:
             chunks = connection.execute(
                 f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
-                           d.source_id,d.external_id,d.source_url,
+                           d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,
                            s.name source_name,s.kind source_kind
                     FROM chunks_fts JOIN chunks c ON c.id=CAST(chunks_fts.chunk_id AS INTEGER)
                     JOIN documents d ON d.id=c.document_id
@@ -97,7 +98,7 @@ class SearchEngine:
             metadata = connection.execute(
                 f"""SELECT m.rowid metadata_id,m.content,m.kind,m.provenance,
                            d.id document_id,d.relative_path,d.title,d.content_hash,d.metadata_json,
-                           d.source_id,d.external_id,d.source_url,
+                           d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,
                            s.name source_name,s.kind source_kind
                     FROM metadata_fts m JOIN documents d ON d.id=CAST(m.document_id AS INTEGER)
                     JOIN sources s ON s.id=d.source_id
@@ -143,7 +144,7 @@ class SearchEngine:
         with self.db.connect() as connection:
             rows = connection.execute(
                 f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
-                           d.source_id,d.external_id,d.source_url,
+                           d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,
                            s.name source_name,s.kind source_kind,
                            v.vector_json
                     FROM chunks c JOIN documents d ON d.id=c.document_id
@@ -235,6 +236,19 @@ class SearchEngine:
             "path": row["relative_path"],
             "document_ref": f"{row['source_name']}:{row['relative_path']}",
             "stable_ref": stable_ref(row),
+            "chunk_ordinal": None if is_metadata else row["ordinal"],
+            "start_char": None if is_metadata else row["start_char"],
+            "end_char": None if is_metadata else row["end_char"],
+            "heading_path": next(
+                (
+                    item.get("metadata", {}).get("heading_path")
+                    for item in provenance
+                    if item.get("metadata", {}).get("heading_path")
+                ),
+                None,
+            ),
+            "indexed_at": row["indexed_at"],
+            "source_modified_at": _source_modified_at(row),
             "title": row["title"],
             "text": (f"{row['kind']}: {row['content']}" if is_metadata else row["text"])[:1200],
             "score": round(score, 6),
@@ -246,7 +260,7 @@ class SearchEngine:
                 "url": row["source_url"],
                 "path": row["relative_path"],
                 "content_hash": row["content_hash"],
-                "page": row["page_number"] if "page_number" in row else None,  # noqa: SIM401
+                "page": row["page_number"] if not is_metadata else None,
                 "locators": [item.get("locator") for item in concise_provenance],
             },
             "metadata": json.loads(row["metadata_json"]),
@@ -273,10 +287,21 @@ class SearchEngine:
         start: int = 0,
         length: int = 12000,
         source: str | None = None,
+        around: int | None = None,
+        window: int = 2000,
     ) -> dict[str, Any]:
+        if start < 0 or not 1 <= length <= 100000:
+            raise ValueError("start must be nonnegative and length must be 1..100000")
+        if around is not None and (around < 0 or not 1 <= window <= 100000):
+            raise ValueError("around must be nonnegative and window must be 1..100000")
         document = self.db.resolve_document(path, source)
         artifact = document["effective_artifact_path"] or document["artifact_path"]
         payload = json.loads(Path(artifact).read_text(encoding="utf-8"))
+        if around is not None:
+            if around > len(payload["text"]):
+                raise ValueError("around exceeds indexed text length")
+            start = max(0, around - window // 2)
+            length = window
         end = min(len(payload["text"]), start + length)
         spans = [span for span in payload["spans"] if span["end"] > start and span["start"] < end]
         source_name = str(document["source_name"])
@@ -293,6 +318,7 @@ class SearchEngine:
             "source_hash": document["content_hash"],
             "content_hash": document["content_hash"],
             "indexed_at": document["indexed_at"],
+            "source_modified_at": _source_modified_at(document),
             "authority": "google_drive" if source_kind == "google_drive" else "local_filesystem",
             "text": payload["text"][start:end],
             "start": start,
@@ -342,3 +368,10 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
         if denominator
         else 0.0
     )
+
+
+def _source_modified_at(row: Any) -> str | None:
+    if row["source_kind"] == "google_drive":
+        value = json.loads(row["metadata_json"]).get("modified_time")
+        return str(value) if value else None
+    return datetime.fromtimestamp(row["modified_ns"] / 1e9, UTC).isoformat()

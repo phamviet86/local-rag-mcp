@@ -241,3 +241,9 @@ stable refs. If one Drive ID is indexed in several sources, pass the source expl
 Vietnamese FTS accepts accented or unaccented queries, including `đ`/`d`. The migration rebuilds
 FTS from stored text/metadata using unicode61 remove_diacritics 2; chunk text and vectors remain
 unchanged. Original text is returned, with exact accent matches preferred within lexical candidates.
+
+Content search hits now include `chunk_ordinal`, `start_char`, `end_char`, `heading_path` when
+known, `indexed_at`, and `source_modified_at`. Metadata-only hits have null positions. Offsets
+are Unicode character offsets into the effective indexed artifact, including OCR corrections.
+Use `read(path=stable_ref, around=start_char, window=2000)` or CLI `read REF --around N --window N`
+for context. Window is total characters centered on the hit, clamped at text boundaries.

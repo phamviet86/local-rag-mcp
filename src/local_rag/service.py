@@ -84,8 +84,15 @@ class LocalRAG:
     ) -> dict[str, Any]:
         return self.search_engine.search(query, limit, scope, mode, self.indexer.source_id)
 
-    def read(self, path: str, start: int = 0, length: int = 12000) -> dict[str, Any]:
-        return self.search_engine.read(path, start, length, self.indexer.source_id)
+    def read(
+        self,
+        path: str,
+        start: int = 0,
+        length: int = 12000,
+        around: int | None = None,
+        window: int = 2000,
+    ) -> dict[str, Any]:
+        return self.search_engine.read(path, start, length, self.indexer.source_id, around, window)
 
     def status(self) -> dict[str, Any]:
         return {
@@ -446,8 +453,10 @@ class MultiSourceRAG:
         source: str | None = None,
         start: int = 0,
         length: int = 12000,
+        around: int | None = None,
+        window: int = 2000,
     ) -> dict[str, Any]:
-        return self.search_engine.read(path, start, length, source)
+        return self.search_engine.read(path, start, length, source, around, window)
 
     def status(self) -> dict[str, Any]:
         result: dict[str, Any] = {
