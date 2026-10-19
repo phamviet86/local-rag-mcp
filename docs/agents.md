@@ -84,3 +84,9 @@ remote-embedding credentials by default.
 
 Local reconciliation aborts without deleting indexed data when discovery cannot read the root
 or a subtree. Source health records a sanitized error; restore access and retry reconciliation.
+
+Drive sync now reports `metadata_updated` for location-only changes. Content keys use checksum/size
+(or modified time and MIME for native files), never Drive version. v2 fingerprints upgrade in place.
+Matching content updates paths and identity without extraction or downloads, retaining derived state.
+Missing content evidence or changed MIME falls back to download; changed native modified time also
+falls back safely. No live Drive rename assumption has been verified by the offline test suite.

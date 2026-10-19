@@ -56,23 +56,55 @@ class DriveItem:
     ancestor_ids: tuple[str, ...] = ()
     path_components: tuple[str, ...] = ()
 
+    size: int | None = None
+
+    @property
+    def content_key(self) -> list[Any]:
+        if self.checksum:
+            return ["checksum", self.checksum, self.size, self.mime_type]
+        return ["modified", self.modified_time, self.mime_type]
+
+    @property
+    def metadata_key(self) -> list[Any]:
+        return [
+            self.name,
+            self.relative_path,
+            self.web_url,
+            list(self.ancestor_ids),
+            list(self.path_components),
+        ]
+
     @property
     def fingerprint(self) -> str:
         return json.dumps(
-            [
-                "drive-metadata-v2",
-                self.checksum,
-                self.version,
-                self.modified_time,
-                self.mime_type,
-                self.name,
-                self.relative_path,
-                self.web_url,
-                self.ancestor_ids,
-                self.path_components,
-            ],
-            ensure_ascii=True,
+            ["drive-metadata-v3", self.content_key, self.metadata_key], ensure_ascii=True
         )
+
+    def same_content(self, previous: str) -> bool:
+        try:
+            value = json.loads(previous)
+            if value[0] == "drive-metadata-v2" and len(value) == 10:
+                old = (
+                    ["checksum", value[1], None, value[4]]
+                    if value[1]
+                    else ["modified", value[3], value[4]]
+                )
+            elif value[0] == "drive-metadata-v3" and len(value) == 3:
+                old = value[1]
+            else:
+                return False
+            new = self.content_key
+            if not old[1] or not new[1]:
+                return False  # Missing content evidence must never hide a change.
+            if old[0] == new[0] == "checksum" and len(old) == 4:
+                return bool(
+                    old[1] == new[1]
+                    and old[3] == new[3]
+                    and (old[2] is None or new[2] is None or old[2] == new[2])
+                )
+            return bool(old == new)
+        except (ValueError, TypeError, IndexError, KeyError):
+            return False
 
 
 class DriveItemError(RuntimeError):
@@ -216,6 +248,7 @@ class GoogleDriveBackend:
             str(value.get("webViewLink") or f"https://drive.google.com/open?id={value['id']}"),
             ancestor_ids,
             path_components,
+            int(value["size"]) if value.get("size") is not None else None,
         )
 
     def full_scan(self, root_id: str) -> DriveScan:
@@ -491,6 +524,7 @@ class DriveAdapter:
             "mode": mode,
             "indexed": 0,
             "unchanged": 0,
+            "metadata_updated": 0,
             "removed": 0,
             "embedded": 0,
             "warnings": [],
@@ -531,7 +565,15 @@ class DriveAdapter:
             current = known.get(item.id)
             self._stage = "index"
             try:
-                if current is not None and current["source_version"] == item.fingerprint:
+                if current is not None and (
+                    current["source_version"] == item.fingerprint
+                    or item.same_content(current["source_version"])
+                ):
+                    metadata_changed = current["source_version"] != item.fingerprint
+                    if metadata_changed:
+                        self._update_metadata(item, current)
+                        current = self.service.db.document(Path(current["path"]), self.source.id)
+                        report["metadata_updated"] += 1
                     if force_index and not reextract:
                         snapshot = FileSnapshot(
                             Path(current["path"]), int(current["size"]), int(current["modified_ns"])
@@ -543,7 +585,7 @@ class DriveAdapter:
                     elif reextract:
                         self._index(item, current, redownload=False, reextract=True)
                         report["indexed"] += 1
-                    else:
+                    elif not metadata_changed:
                         report["unchanged"] += 1
                 else:
                     self._index(item, current, redownload=True)
@@ -593,6 +635,30 @@ class DriveAdapter:
                 self.source.id, self.source.cursor, self.source.last_error
             )
         return report
+
+    def _update_metadata(self, item: DriveItem, current: Any) -> None:
+        metadata = json.loads(current["metadata_json"])
+        pointer = Path(metadata.get("drive_raw_key", "unknown"))
+        metadata.update(self._identity_metadata(item, pointer))
+        with self.service.db.transaction() as connection:
+            connection.execute(
+                """UPDATE documents SET relative_path=?,title=?,source_url=?,source_version=?,
+                   metadata_json=? WHERE id=?""",
+                (
+                    item.relative_path,
+                    item.name,
+                    item.web_url,
+                    item.fingerprint,
+                    json.dumps(metadata),
+                    current["id"],
+                ),
+            )
+            connection.execute(
+                """UPDATE chunks_fts SET relative_path=?,title=? WHERE chunk_id IN
+                   (SELECT id FROM chunks WHERE document_id=?)""",
+                (item.relative_path, item.name, current["id"]),
+            )
+            self.service.db._refresh_metadata_index(connection, int(current["id"]))
 
     def _index(
         self,

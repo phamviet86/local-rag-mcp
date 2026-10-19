@@ -570,3 +570,62 @@ def test_per_document_index_error_rolls_back_and_continues(make_service):
     assert report["indexed"] == 1 and set(rows(service)) == {"good"}
     assert service.index_coverage()["issues"][0]["stage"] == "index"
     assert source_report(service)["complete"] and set(rows(service)) == {"bad", "good"}
+
+
+@pytest.mark.parametrize("native", [True, False])
+def test_folder_metadata_only_and_v2_upgrade_do_not_download(make_service, native):
+    fields = {"modifiedTime": "2026-10-01T00:00:00Z"}
+    if not native:
+        fields.update(md5Checksum="checksum", size="21")
+    mime = GOOGLE_DOC if native else "text/plain"
+    backend = TreeDrive(
+        {
+            "root": [value("parent", "Old", FOLDER_MIME)],
+            "parent": [value(str(i), f"note{i}", mime, **fields) for i in range(2)],
+        }
+    )
+    service = make_service(backend)
+    source_report(service, full=True)
+    original = rows(service)
+    with service.db.transaction() as connection:
+        for row in original.values():
+            meta = json.loads(row["metadata_json"])
+            old = [
+                "drive-metadata-v2",
+                fields.get("md5Checksum", ""),
+                "1",
+                fields["modifiedTime"],
+                mime,
+                row["title"],
+                row["relative_path"],
+                row["source_url"],
+                meta["drive_ancestor_ids"],
+                meta["drive_path_components"],
+            ]
+            connection.execute(
+                "UPDATE documents SET source_version=? WHERE id=?", (json.dumps(old), row["id"])
+            )
+            connection.execute(
+                """INSERT INTO agent_metadata
+                (document_id,key,value_json,evidence_json,actor)
+                VALUES(?,'tag','"kept"','[]','test')""",
+                (row["id"],),
+            )
+    backend.tree["root"] = [value("parent", "New", FOLDER_MIME)]
+    for item in backend.tree["parent"]:
+        item["version"] = "999"
+    backend.downloads.clear()
+    with patch.object(service.extractor, "extract", side_effect=AssertionError("no extraction")):
+        report = source_report(service, full=True)
+    assert report["metadata_updated"] == 2 and report["indexed"] == 0
+    assert not backend.downloads
+    for key, row in rows(service).items():
+        assert row["id"] == original[key]["id"]
+        assert row["relative_path"].startswith("New/")
+    with service.db.connect() as connection:
+        assert connection.execute("SELECT count(*) FROM agent_metadata").fetchone()[0] == 2
+    backend.tree["parent"][0]["modifiedTime"] = "2026-10-02T00:00:00Z"
+    if not native:
+        backend.tree["parent"][0]["md5Checksum"] = "new-checksum"
+    source_report(service, full=True)
+    assert backend.downloads == ["0"]
