@@ -2,12 +2,12 @@
 
 This guide is the release path for macOS and Linux machines that should use `local-rag-mcp` normally.
 It assumes a trusted local user and a released wheel. Use the
-[v0.9.0 GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.9.0) for its
+[v0.10.0 GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.0) for its
 wheel, source archive, and SHA-256 checksums.
 
 ## Distribution identity
 
-The v0.9.0 wheel includes agent skills, `install-skills`, and protected embedding JSON support.
+The v0.10.0 wheel includes agent skills, `install-skills`, and protected embedding JSON support.
 Install the wheel and its skills using the [README flow](../README.md#install-with-an-agent).
 Run the installed executable's `install-skills --replace` after upgrades, retaining any custom
 `--dest` skills root; keep the environment location stable or regenerate the skill runtime references
@@ -59,7 +59,7 @@ PY
 Create a dedicated production environment first; cloning the repository is not required. Then choose
 either the convenient direct URL install or the recommended verified local-file install. For the
 latter, download the wheel, compare its SHA-256 digest with `SHA256SUMS` on the
-[release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.9.0), then install the
+[release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.0), then install the
 verified local file.
 
 ```bash
@@ -73,20 +73,20 @@ python -m pip install --upgrade pip
 
 ```bash
 python -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.9.0/phamviet_local_rag_mcp-0.9.0-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0/phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
 local-rag-mcp --help
 local-rag-mcp install-skills
 ```
 
-To verify the exact v0.9.0 wheel on a supported platform, download only the named wheel and the
+To verify the exact v0.10.0 wheel on a supported platform, download only the named wheel and the
 checksum manifest, then validate the wheel entry. `shasum` is used on macOS and `sha256sum` on Linux;
 both commands must print `OK` before installation.
 
 ```bash
-RELEASE_URL="https://github.com/phamviet86/local-rag-mcp/releases/download/v0.9.0"
-WHEEL="phamviet_local_rag_mcp-0.9.0-py3-none-any.whl"
-mkdir -p "$HOME/Downloads/local-rag-mcp-v0.9.0"
-cd "$HOME/Downloads/local-rag-mcp-v0.9.0"
+RELEASE_URL="https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0"
+WHEEL="phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
+mkdir -p "$HOME/Downloads/local-rag-mcp-v0.10.0"
+cd "$HOME/Downloads/local-rag-mcp-v0.10.0"
 curl -fL -O "$RELEASE_URL/$WHEEL"
 curl -fL -O "$RELEASE_URL/SHA256SUMS"
 grep -F "  $WHEEL" SHA256SUMS > "$WHEEL.sha256"
@@ -105,7 +105,7 @@ local-rag-mcp --version
 local-rag-mcp install-skills
 ```
 
-Use `SHA256SUMS` attached to the v0.9.0 release as the source of truth; do not hard-code a digest in
+Use `SHA256SUMS` attached to the v0.10.0 release as the source of truth; do not hard-code a digest in
 local deployment notes. Do not use `pip install local-rag-mcp` or a checksum copied from an untrusted
 issue, chat, or mirror.
 
@@ -113,9 +113,9 @@ Install wheel extras directly from the same release wheel:
 
 ```bash
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.9.0/phamviet_local_rag_mcp-0.9.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0/phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.9.0/phamviet_local_rag_mcp-0.9.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.0/phamviet_local_rag_mcp-0.10.0-py3-none-any.whl"
 ```
 
 Extras may be combined if needed. Do not substitute `local-rag-mcp[...]` in any command: that PyPI
@@ -250,7 +250,7 @@ destinations and verifies fixture local-folder search/read through the real SDK 
 checks the initialized empty reader state and JSON-RPC/tool error boundary. Validate both packaged
 skills with the Codex skill-creator `quick_validate.py` before release.
 
-## Preparing a v0.9.0 to v0.10.0 upgrade
+## Upgrading v0.9.0 to v0.10.0
 
 See [v0.10.0 upgrade and rollback](releases/v0.10.0.md#upgrade-and-rollback).
-This checkout does not publish a release or upgrade any existing deployment.
+Existing deployments must be upgraded explicitly by their operator.

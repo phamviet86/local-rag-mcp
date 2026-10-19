@@ -3,7 +3,9 @@
 All notable changes to this project are documented in this file. This project follows
 [Semantic Versioning](https://semver.org/) while it remains pre-1.0.
 
-## [Unreleased] — 0.10.0
+## [Unreleased]
+
+## [0.10.0] - 2026-10-19
 
 - Abort incomplete local discovery without deleting indexed state; detect unique content moves.
 - Split Drive content/location keys with v2 compatibility and metadata-only updates.
@@ -60,3 +62,5 @@ All notable changes to this project are documented in this file. This project fo
 [0.9.0]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.9.0
 [0.7.1]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.1
 [0.7.0]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.7.0
+
+[0.10.0]: https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.0
