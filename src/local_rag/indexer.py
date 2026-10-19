@@ -481,7 +481,8 @@ class Indexer:
                 ),
             )
             connection.execute(
-                "INSERT INTO chunks_fts(text,title,relative_path,chunk_id) VALUES(?,?,?,?)",
+                """INSERT INTO chunks_fts(text,title,relative_path,chunk_id)
+                   VALUES(fts_fold(?),fts_fold(?),?,?)""",
                 (chunk.text, title, relative, int(cursor.lastrowid)),
             )
 

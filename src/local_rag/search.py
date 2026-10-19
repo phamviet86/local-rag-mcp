@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .db import Database, stable_ref
+from .db import Database, fts_fold, stable_ref
 from .embeddings import EmbeddingProvider, cache_identity
 
 SEARCH_MODES = ("full_text", "semantic", "hybrid")
@@ -79,7 +79,7 @@ class SearchEngine:
     def _full_text(
         self, terms: Sequence[str], scope: str | None, source: str | None, limit: int
     ) -> dict[tuple[str, int], dict[str, Any]]:
-        fts_query = " OR ".join(f'"{term}"' for term in terms)
+        fts_query = " OR ".join(f'"{fts_fold(term)}"' for term in terms)
         filter_sql, filter_values = _filter_sql(scope, source)
         candidate_limit = max(20, limit * 4)
         with self.db.connect() as connection:
@@ -105,6 +105,12 @@ class SearchEngine:
                     ORDER BY bm25(metadata_fts) LIMIT ?""",
                 [fts_query, *filter_values, candidate_limit],
             ).fetchall()
+        # Prefer exact accent matches within the lexical candidate set, retaining
+        # SQLite rank order among ties. The source text remains authoritative.
+        chunks = sorted(
+            chunks,
+            key=lambda row: -sum(term.casefold() in row["text"].casefold() for term in terms),
+        )
         results: dict[tuple[str, int], dict[str, Any]] = {}
         for rank, row in enumerate(chunks):
             results[("chunk", int(row["id"]))] = {

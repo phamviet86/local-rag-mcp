@@ -140,3 +140,18 @@ def test_stable_reference_survives_move_and_relocate(tmp_path: Path):
         == "complete"
     )
     assert service.read(ref)["text"] == "orchard identity"
+
+
+def test_vietnamese_fts_keeps_original_text_and_vectors(tmp_path: Path):
+    root, home = tmp_path / "root", tmp_path / "home"
+    root.mkdir()
+    (root / "note.txt").write_text("hợp đồng đường ĐƯỜNG")
+    service = MultiSourceRAG(Settings(root=home, home=home))
+    service.add_local_source("notes", root)
+    service.reconcile()
+    for query in ("hop", "hợp", "duong", "đường", "ĐƯỜNG"):
+        hit = service.search(query, mode="full_text")["results"][0]
+        assert hit["text"] == "hợp đồng đường ĐƯỜNG"
+    evidence = [{"path": "notes:note.txt", "quote": "hợp"}]
+    service.add_metadata("notes:note.txt", "tag", "đặc biệt", evidence, "test")
+    assert service.search("dac", mode="full_text")["results"]

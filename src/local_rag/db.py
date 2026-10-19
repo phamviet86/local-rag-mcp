@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
+import unicodedata
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -126,6 +128,24 @@ MIGRATIONS = [
     );
     INSERT INTO index_writer_lease(singleton) VALUES(1);
     """,
+    """
+    DROP TABLE chunks_fts;
+    CREATE VIRTUAL TABLE chunks_fts USING fts5(
+      text, title, relative_path UNINDEXED, chunk_id UNINDEXED,
+      tokenize='unicode61 remove_diacritics 2'
+    );
+    INSERT INTO chunks_fts(text,title,relative_path,chunk_id)
+      SELECT fts_fold(c.text),fts_fold(d.title),d.relative_path,c.id
+      FROM chunks c JOIN documents d ON d.id=c.document_id;
+    CREATE VIRTUAL TABLE metadata_fts_v3 USING fts5(
+      content UNINDEXED, document_id UNINDEXED, kind UNINDEXED, provenance UNINDEXED,
+      folded, tokenize='unicode61 remove_diacritics 2'
+    );
+    INSERT INTO metadata_fts_v3(content,document_id,kind,provenance,folded)
+      SELECT content,document_id,kind,provenance,fts_fold(content) FROM metadata_fts;
+    DROP TABLE metadata_fts;
+    ALTER TABLE metadata_fts_v3 RENAME TO metadata_fts;
+    """,
 ]
 
 
@@ -139,6 +159,7 @@ class Database:
         if os.name != "nt":
             self.path.chmod(0o600)
         connection.row_factory = sqlite3.Row
+        connection.create_function("fts_fold", 1, fts_fold, deterministic=True)
         connection.execute("PRAGMA foreign_keys=ON")
         try:
             connection.execute("PRAGMA journal_mode=WAL")
@@ -534,6 +555,9 @@ class Database:
                     relationship["evidence_json"],
                 ),
             )
+        connection.execute(
+            "UPDATE metadata_fts SET folded=fts_fold(content) WHERE document_id=?", (document_id,)
+        )
 
     def _validate_evidence(self, evidence: Sequence[dict[str, Any]]) -> None:
         if not evidence:
@@ -579,3 +603,13 @@ def stable_ref(document: Any) -> str:
     keys = set(document.keys())
     identifier = document["document_id"] if "document_id" in keys else document["id"]
     return f"local:{document['source_id']}:{identifier}"
+
+
+def fts_fold(text: str) -> str:
+    # Metadata JSON may contain escaped Unicode. Original display text stays intact.
+    text = re.sub(
+        r"\\u([0-9a-fA-F]{4})",
+        lambda match: match[0] if 0xD800 <= int(match[1], 16) <= 0xDFFF else chr(int(match[1], 16)),
+        text,
+    )
+    return unicodedata.normalize("NFC", text).replace("đ", "d").replace("Đ", "D")

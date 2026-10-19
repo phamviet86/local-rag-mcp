@@ -654,7 +654,7 @@ class DriveAdapter:
                 ),
             )
             connection.execute(
-                """UPDATE chunks_fts SET relative_path=?,title=? WHERE chunk_id IN
+                """UPDATE chunks_fts SET relative_path=?,title=fts_fold(?) WHERE chunk_id IN
                    (SELECT id FROM chunks WHERE document_id=?)""",
                 (item.relative_path, item.name, current["id"]),
             )
