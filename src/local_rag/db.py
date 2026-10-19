@@ -168,6 +168,15 @@ MIGRATIONS = [
         for table in ("vectors", "documents", "chunks", "sources")
         for operation in ("INSERT", "UPDATE", "DELETE")
     ),
+    """
+    CREATE TABLE document_id_sequence (
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1), next_id INTEGER NOT NULL
+    );
+    INSERT INTO document_id_sequence SELECT 1,COALESCE(MAX(id),0)+1 FROM documents;
+    CREATE TRIGGER document_id_sequence_insert AFTER INSERT ON documents BEGIN
+      UPDATE document_id_sequence SET next_id=MAX(next_id,NEW.id+1) WHERE singleton=1;
+    END;
+    """,
 ]
 
 

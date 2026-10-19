@@ -142,3 +142,6 @@ Coverage now includes `indexed_documents` with stable refs for local and Drive r
 The existing issue pagination remains separate. Reader MCP coverage redacts failing filenames,
 paths and detailed reasons (fields are null); admin/reviewer inspection retains details.
 Reader doctor exposes a generic sync error. Use aggregate coverage to disclose incomplete results.
+
+Local document IDs are allocated monotonically after upgrade; deleting a document does not
+allow its stable ref to resolve to an unrelated later document. Existing IDs are preserved.

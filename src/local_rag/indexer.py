@@ -399,12 +399,18 @@ class Indexer:
                 )
                 connection.execute("DELETE FROM reviews WHERE document_id=?", (document_id,))
         else:
-            cursor = connection.execute(
+            document_id = int(
+                connection.execute(
+                    "SELECT next_id FROM document_id_sequence WHERE singleton=1"
+                ).fetchone()[0]
+            )
+            connection.execute(
                 """INSERT INTO documents
-                   (path,relative_path,content_hash,size,modified_ns,media_type,title,
+                   (id,path,relative_path,content_hash,size,modified_ns,media_type,title,
                     metadata_json,artifact_path,source_id,external_id,source_version,source_url)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
+                    document_id,
                     str(snapshot.path),
                     relative,
                     document.content_hash,
@@ -420,7 +426,6 @@ class Indexer:
                     document.source_url,
                 ),
             )
-            document_id = int(cursor.lastrowid)
         self._insert_chunks(connection, document_id, relative, title, document.chunks)
         for review in () if document.preserve_derived_state else document.extracted.reviews:
             connection.execute(

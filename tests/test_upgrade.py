@@ -439,3 +439,23 @@ def test_local_move_keeps_ocr_corrections_and_never_embeds(tmp_path: Path):
     assert (
         service.read(hit["stable_ref"])["text"][hit["start_char"] : hit["end_char"]] == hit["text"]
     )
+
+
+def test_deleted_stable_reference_cannot_resolve_to_new_document(tmp_path: Path):
+    import pytest
+
+    root, home = tmp_path / "root", tmp_path / "home"
+    root.mkdir()
+    original = root / "old.txt"
+    original.write_text("original orchard")
+    service = MultiSourceRAG(Settings(root=home, home=home))
+    service.add_local_source("notes", root)
+    service.reconcile()
+    ref = service.search("orchard", mode="full_text")["results"][0]["stable_ref"]
+    original.unlink()
+    service.reconcile()
+    (root / "new.txt").write_text("unrelated orchard")
+    service.reconcile()
+    assert service.search("orchard", mode="full_text")["results"][0]["stable_ref"] != ref
+    with pytest.raises(ValueError, match="not found"):
+        service.read(ref)
