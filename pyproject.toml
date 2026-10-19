@@ -46,6 +46,7 @@ Issues = "https://github.com/phamviet86/local-rag-mcp/issues"
 Changelog = "https://github.com/phamviet86/local-rag-mcp/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+fast-search = ["numpy>=1.26,<3"]
 google-drive = [
   "google-api-python-client==2.198.0",
   "google-auth-oauthlib==1.4.0",

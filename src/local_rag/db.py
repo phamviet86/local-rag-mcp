@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+import struct
 import unicodedata
 import uuid
 from collections.abc import Iterator, Sequence
@@ -146,6 +147,27 @@ MIGRATIONS = [
     DROP TABLE metadata_fts;
     ALTER TABLE metadata_fts_v3 RENAME TO metadata_fts;
     """,
+    """
+    ALTER TABLE vectors ADD COLUMN vector_blob BLOB;
+    UPDATE vectors SET vector_blob=vector_blob_from_json(vector_json);
+    CREATE TRIGGER vector_blob_insert AFTER INSERT ON vectors BEGIN
+      UPDATE vectors SET vector_blob=vector_blob_from_json(NEW.vector_json)
+      WHERE chunk_hash=NEW.chunk_hash AND provider=NEW.provider AND model=NEW.model;
+    END;
+    CREATE TRIGGER vector_blob_update AFTER UPDATE OF vector_json ON vectors BEGIN
+      UPDATE vectors SET vector_blob=vector_blob_from_json(NEW.vector_json)
+      WHERE chunk_hash=NEW.chunk_hash AND provider=NEW.provider AND model=NEW.model;
+    END;
+    CREATE TABLE search_revision (singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                                  revision INTEGER NOT NULL);
+    INSERT INTO search_revision VALUES(1,0);
+    """
+    + "\n".join(
+        f"CREATE TRIGGER search_revision_{table}_{operation} AFTER {operation} ON {table} "
+        "BEGIN UPDATE search_revision SET revision=revision+1 WHERE singleton=1; END;"
+        for table in ("vectors", "documents", "chunks", "sources")
+        for operation in ("INSERT", "UPDATE", "DELETE")
+    ),
 ]
 
 
@@ -160,6 +182,9 @@ class Database:
             self.path.chmod(0o600)
         connection.row_factory = sqlite3.Row
         connection.create_function("fts_fold", 1, fts_fold, deterministic=True)
+        connection.create_function(
+            "vector_blob_from_json", 1, vector_blob_from_json, deterministic=True
+        )
         connection.execute("PRAGMA foreign_keys=ON")
         try:
             connection.execute("PRAGMA journal_mode=WAL")
@@ -613,3 +638,12 @@ def fts_fold(text: str) -> str:
         text,
     )
     return unicodedata.normalize("NFC", text).replace("đ", "d").replace("Đ", "D")
+
+
+def vector_blob_from_json(value: str) -> bytes | None:
+    try:
+        vector = json.loads(value)
+        return struct.pack(f"<{len(vector)}f", *vector)
+    except (ValueError, TypeError, OverflowError, struct.error):
+        # Preserve historical JSON even if it cannot be represented as float32.
+        return None

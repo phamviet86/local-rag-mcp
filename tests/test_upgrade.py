@@ -224,3 +224,44 @@ def test_docx_headings_keep_legacy_text_and_order_is_opt_in(tmp_path: Path):
     ordered = _docx(path, True)
     assert ordered.text.index("table contents") < ordered.text.index("after table")
     assert _chunks(legacy, 1200, 150)[0].chunk_hash != _chunks(ordered, 1200, 150)[0].chunk_hash
+
+
+def test_semantic_blob_matches_json_and_invalidates_across_writers(tmp_path: Path):
+    import json
+
+    import pytest
+
+    from tests.test_optimizations import BatchEmbeddings
+
+    pytest.importorskip("numpy")
+    root, home = tmp_path / "root", tmp_path / "home"
+    root.mkdir()
+    (root / "one.txt").write_text("orchard orchard")
+    (root / "two.txt").write_text("ocean")
+    service = MultiSourceRAG(Settings(root=home, home=home), BatchEmbeddings())
+    source = service.add_local_source("notes", root)
+    service.reconcile()
+    engine = service.search_engine
+    with patch("local_rag.search._numpy", return_value=None):
+        baseline = engine._semantic("orchard", None, None, 100)
+    accelerated = engine._semantic("orchard", None, None, 100)
+    assert list(accelerated) == list(baseline)
+    for key in baseline:
+        assert accelerated[key][1] == pytest.approx(baseline[key][1], abs=1e-6)
+    assert engine._matrix_cache
+    (root / "new.txt").write_text("orchard ocean")
+    other = MultiSourceRAG(service.settings, BatchEmbeddings())
+    other.reconcile()
+    assert len(engine._semantic("orchard", None, None, 100)) == 3
+    # Another connection updating JSON refreshes BLOB and invalidates the cached matrix.
+    with other.db.transaction() as connection:
+        connection.execute("UPDATE vectors SET vector_json=?", (json.dumps([0, 0, 1]),))
+    with patch("local_rag.search._numpy", return_value=None):
+        baseline = engine._semantic("orchard", None, None, 100)
+    accelerated = engine._semantic("orchard", None, None, 100)
+    assert [value[1] for value in accelerated.values()] == pytest.approx(
+        [value[1] for value in baseline.values()], abs=1e-6
+    )
+    other.enable_source(source["id"], False)
+    with pytest.raises(RuntimeError, match="no cached vectors"):
+        engine._semantic("orchard", None, None, 100)

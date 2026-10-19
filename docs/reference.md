@@ -257,3 +257,8 @@ For existing files, explicit `reindex --source NAME --reextract` refreshes prove
 tables in document order, set `docx_document_order: true` in the operator-managed config.json,
 restart the process and explicitly reextract affected DOCX files. This opt-in changes text and
 may embed changed chunks. Its extraction cache is separate from the default representation.
+
+Semantic search retains vector_json and adds a float32 BLOB copy through migration. The optional
+`fast-search` extra enables NumPy matrix scoring; without it the original JSON scorer remains
+available. A durable revision invalidates the per-provider/model matrix after index writes,
+including writes by other processes. Float32 scores can differ at rounding precision.

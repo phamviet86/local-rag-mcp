@@ -35,6 +35,9 @@ class SearchEngine:
         self.query_cache_size = query_cache_size
         self._query_cache: OrderedDict[tuple[str, str, str], Sequence[float]] = OrderedDict()
         self._cache_lock = threading.Lock()
+        self._matrix_cache: OrderedDict[tuple[str, str], tuple[int, dict[str, int], Any, Any]] = (
+            OrderedDict()
+        )
 
     def search(
         self,
@@ -146,21 +149,23 @@ class SearchEngine:
         query_vector = self._query_vector(query, provider, model)
         filter_sql, filter_values = _filter_sql(scope, source)
         with self.db.connect() as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
                 f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
                            d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,
                            s.name source_name,s.kind source_kind,
-                           v.vector_json
+                           v.vector_json,v.vector_blob
                     FROM chunks c JOIN documents d ON d.id=c.document_id
                     JOIN sources s ON s.id=d.source_id
                     JOIN vectors v ON v.chunk_hash=c.chunk_hash
                     WHERE v.provider=? AND v.model=? AND s.enabled=1 {filter_sql}""",
                 [provider, model, *filter_values],
             ).fetchall()
+            scores = self._vector_scores(connection, query_vector, provider, model, rows)
         if not rows:
             raise RuntimeError("no cached vectors exist for the configured provider and model")
         scored = sorted(
-            ((_cosine(query_vector, json.loads(row["vector_json"])), row) for row in rows),
+            zip(scores, rows, strict=True),
             key=lambda item: item[0],
             reverse=True,
         )[: max(20, limit * 4)]
@@ -168,6 +173,64 @@ class SearchEngine:
             int(row["id"]): (rank, max(0.0, (score + 1) / 2), row)
             for rank, (score, row) in enumerate(scored, 1)
         }
+
+    def _vector_scores(
+        self,
+        connection: Any,
+        query: Sequence[float],
+        provider: str,
+        model: str,
+        rows: Sequence[Any],
+    ) -> list[float]:
+        np = _numpy()
+        if np is None or not rows:
+            return [_cosine(query, json.loads(row["vector_json"])) for row in rows]
+        revision = int(
+            connection.execute("SELECT revision FROM search_revision WHERE singleton=1").fetchone()[
+                0
+            ]
+        )
+        key = provider, model
+        with self._cache_lock:
+            cached = self._matrix_cache.get(key)
+            if cached is None or cached[0] != revision:
+                vectors = connection.execute(
+                    "SELECT chunk_hash,vector_blob FROM vectors WHERE provider=? AND model=? "
+                    "ORDER BY chunk_hash",
+                    key,
+                ).fetchall()
+                if any(
+                    row["vector_blob"] is None or len(row["vector_blob"]) != len(query) * 4
+                    for row in vectors
+                ):
+                    return [_cosine(query, json.loads(row["vector_json"])) for row in rows]
+                matrix = np.stack(
+                    [np.frombuffer(row["vector_blob"], dtype="<f4") for row in vectors]
+                )
+                norms = np.linalg.norm(matrix, axis=1)
+                cached = (
+                    revision,
+                    {row["chunk_hash"]: i for i, row in enumerate(vectors)},
+                    matrix,
+                    norms,
+                )
+                self._matrix_cache[key] = cached
+                self._matrix_cache.move_to_end(key)
+                while len(self._matrix_cache) > 4:
+                    self._matrix_cache.popitem(last=False)
+            _, indices, matrix, norms = cached
+        vector = np.asarray(query, dtype=np.float32)
+        if (
+            matrix.shape[1] != len(query)
+            or not np.all(np.isfinite(matrix))
+            or not np.all(np.isfinite(vector))
+        ):
+            return [_cosine(query, json.loads(row["vector_json"])) for row in rows]
+        denominator = norms * np.linalg.norm(vector)
+        scores = np.divide(
+            matrix @ vector, denominator, out=np.zeros_like(norms), where=denominator != 0
+        )
+        return [float(scores[indices[row["chunk_hash"]]]) for row in rows]
 
     def _query_vector(self, query: str, provider: str, model: str) -> Sequence[float]:
         key = provider, model, query
@@ -440,3 +503,11 @@ def _source_modified_at(row: Any) -> str | None:
         value = json.loads(row["metadata_json"]).get("modified_time")
         return str(value) if value else None
     return datetime.fromtimestamp(row["modified_ns"] / 1e9, UTC).isoformat()
+
+
+def _numpy() -> Any:
+    try:
+        import numpy
+    except ImportError:
+        return None
+    return numpy
