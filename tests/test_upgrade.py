@@ -265,3 +265,69 @@ def test_semantic_blob_matches_json_and_invalidates_across_writers(tmp_path: Pat
     other.enable_source(source["id"], False)
     with pytest.raises(RuntimeError, match="no cached vectors"):
         engine._semantic("orchard", None, None, 100)
+
+
+def test_search_filters_apply_through_sdk_and_cli(tmp_path: Path, capsys):
+    import json
+    import os
+
+    import anyio
+    import pytest
+
+    from local_rag.cli import main
+    from local_rag.mcp import create_sdk_server
+
+    root, home = tmp_path / "root", tmp_path / "home"
+    root.mkdir()
+    for name, timestamp in (
+        ("old.txt", 1577836800),
+        ("new.txt", 1735689600),
+        ("new.md", 1735689600),
+    ):
+        path = root / name
+        path.write_text(f"orchard {name}")
+        os.utime(path, (timestamp, timestamp))
+    settings = Settings(root=home, home=home)
+    settings.save()
+    service = MultiSourceRAG(settings)
+    service.add_local_source("notes", root)
+    service.reconcile()
+    filters = {
+        "media_type": "text/plain",
+        "modified_after": "2024-01-01",
+        "modified_before": "2026-01-01",
+        "per_document": 1,
+    }
+    result = service.search("orchard", mode="full_text", **filters)
+    assert [hit["path"] for hit in result["results"]] == ["new.txt"]
+
+    async def check():
+        server = create_sdk_server(service)
+        result = await server.call_tool(
+            "search", {"query": "orchard", "mode": "full_text", **filters}
+        )
+        assert not result.is_error
+        assert [hit["path"] for hit in result.structured_content["results"]] == ["new.txt"]
+
+    anyio.run(check)
+    main(
+        [
+            "--home",
+            str(home),
+            "search",
+            "orchard",
+            "--mode",
+            "full_text",
+            "--media-type",
+            "text/plain",
+            "--modified-after",
+            "2024-01-01",
+            "--modified-before",
+            "2026-01-01",
+            "--per-document",
+            "1",
+        ]
+    )
+    assert [hit["path"] for hit in json.loads(capsys.readouterr().out)["results"]] == ["new.txt"]
+    with pytest.raises(ValueError, match="must precede"):
+        service.search("orchard", modified_after="2026-01-01", modified_before="2020-01-01")

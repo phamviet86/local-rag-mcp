@@ -47,6 +47,9 @@ class SearchEngine:
         mode: str = "hybrid",
         source: str | None = None,
         per_document: int = 3,
+        media_type: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
     ) -> dict[str, Any]:
         if mode not in SEARCH_MODES:
             raise ValueError(f"mode must be one of: {', '.join(SEARCH_MODES)}")
@@ -58,14 +61,18 @@ class SearchEngine:
         if not terms:
             raise ValueError("query must contain searchable terms")
         relative_scope = self._relative_scope(scope)
+        filters = (media_type, modified_after, modified_before)
+        _filter_sql(relative_scope, source, *filters)  # Validate even for an empty index.
         warnings: list[str] = []
         lexical = (
-            self._full_text(terms, relative_scope, source, limit) if mode != "semantic" else {}
+            self._full_text(terms, relative_scope, source, limit, filters)
+            if mode != "semantic"
+            else {}
         )
         semantic: dict[int, tuple[int, float, Any]] = {}
         if mode != "full_text":
             try:
-                semantic = self._semantic(query, relative_scope, source, limit)
+                semantic = self._semantic(query, relative_scope, source, limit, filters)
             except Exception as exc:
                 if mode == "semantic":
                     raise SemanticSearchUnavailable(f"semantic search unavailable: {exc}") from exc
@@ -74,7 +81,7 @@ class SearchEngine:
         if mode == "hybrid" and not semantic:
             effective_mode = "full_text"
         results = self._combine(lexical, semantic, limit, effective_mode)
-        results = self._diversify(results, per_document, limit, relative_scope, source)
+        results = self._diversify(results, per_document, limit, relative_scope, source, filters)
         return {
             "mode": mode,
             "effective_mode": effective_mode,
@@ -85,10 +92,15 @@ class SearchEngine:
         }
 
     def _full_text(
-        self, terms: Sequence[str], scope: str | None, source: str | None, limit: int
+        self,
+        terms: Sequence[str],
+        scope: str | None,
+        source: str | None,
+        limit: int,
+        filters: tuple[str | None, str | None, str | None] = (None, None, None),
     ) -> dict[tuple[str, int], dict[str, Any]]:
         fts_query = " OR ".join(f'"{fts_fold(term)}"' for term in terms)
-        filter_sql, filter_values = _filter_sql(scope, source)
+        filter_sql, filter_values = _filter_sql(scope, source, *filters)
         candidate_limit = max(20, limit * 4)
         with self.db.connect() as connection:
             chunks = connection.execute(
@@ -141,13 +153,18 @@ class SearchEngine:
         return results
 
     def _semantic(
-        self, query: str, scope: str | None, source: str | None, limit: int
+        self,
+        query: str,
+        scope: str | None,
+        source: str | None,
+        limit: int,
+        filters: tuple[str | None, str | None, str | None] = (None, None, None),
     ) -> dict[int, tuple[int, float, Any]]:
         if self.embeddings is None:
             raise RuntimeError("no embedding provider is configured")
         provider, model = cache_identity(self.embeddings)
         query_vector = self._query_vector(query, provider, model)
-        filter_sql, filter_values = _filter_sql(scope, source)
+        filter_sql, filter_values = _filter_sql(scope, source, *filters)
         with self.db.connect() as connection:
             connection.execute("BEGIN")
             rows = connection.execute(
@@ -295,6 +312,7 @@ class SearchEngine:
         limit: int,
         scope: str | None,
         source: str | None,
+        filters: tuple[str | None, str | None, str | None],
     ) -> list[dict[str, Any]]:
         counts: Counter[str] = Counter()
         seen: set[str] = set()
@@ -313,7 +331,7 @@ class SearchEngine:
                 break
         # Fetch every scoped location, including copies outside the ranked candidate
         # window. Never disclose disabled sources or locations outside strict scope.
-        filter_sql, values = _filter_sql(scope, source)
+        filter_sql, values = _filter_sql(scope, source, *filters)
         with self.db.connect() as connection:
             for result in selected:
                 if not result["chunk_hash"]:
@@ -464,9 +482,32 @@ def _scope_sql(scope: str | None, column: str) -> tuple[str, list[str]]:
     return f"AND ({column}=? OR {column} LIKE ? ESCAPE '\\')", [scope, escaped.rstrip("/") + "/%"]
 
 
-def _filter_sql(scope: str | None, source: str | None) -> tuple[str, list[str]]:
+def _filter_sql(
+    scope: str | None,
+    source: str | None,
+    media_type: str | None = None,
+    modified_after: str | None = None,
+    modified_before: str | None = None,
+) -> tuple[str, list[str]]:
     clauses: list[str] = []
     values: list[str] = []
+    if media_type is not None:
+        clauses.append("AND d.media_type=?")
+        values.append(media_type)
+    after = _date_bound(modified_after)
+    before = _date_bound(modified_before)
+    if after and before and after >= before:
+        raise ValueError("modified_after must precede modified_before")
+    for operator, bound in ((">", after), ("<", before)):
+        if bound:
+            clauses.append(
+                "AND (CASE WHEN s.kind='google_drive' THEN "
+                "julianday(json_extract(d.metadata_json,'$.modified_time')) "
+                "ELSE d.modified_ns / 86400000000000.0 + 2440587.5 END) "
+                + operator
+                + " julianday(?)"
+            )
+            values.append(bound)
     if source:
         clauses.append("AND (d.source_id=? OR s.name=?)")
         values.extend((source, source))
@@ -511,3 +552,15 @@ def _numpy() -> Any:
     except ImportError:
         return None
     return numpy
+
+
+def _date_bound(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("modified bounds must be ISO 8601 dates/timestamps") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat()

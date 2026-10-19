@@ -40,6 +40,9 @@ READER_TOOLS = [
         "inputSchema": _schema(
             {
                 "query": {"type": "string"},
+                "media_type": {"type": "string"},
+                "modified_after": {"type": "string"},
+                "modified_before": {"type": "string"},
                 "source": {"type": "string"},
                 "folder": {"type": "string"},
                 "mode": {"type": "string", "enum": list(SEARCH_MODES)},
@@ -281,6 +284,9 @@ class MCPServer:
                     values.get("folder"),
                     values.get("mode", "hybrid"),
                     int(values.get("per_document", 3)),
+                    values.get("media_type"),
+                    values.get("modified_after"),
+                    values.get("modified_before"),
                 )
             return self.service.search(
                 values["query"],
@@ -288,6 +294,9 @@ class MCPServer:
                 values.get("folder") or values.get("scope"),
                 values.get("mode", "hybrid"),
                 int(values.get("per_document", 3)),
+                values.get("media_type"),
+                values.get("modified_after"),
+                values.get("modified_before"),
             )
         if name == "read":
             if multi:
@@ -526,6 +535,9 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         mode: str = "hybrid",
         limit: int = 8,
         per_document: int = 3,
+        media_type: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
     ) -> dict[str, Any]:
         """Search globally or filter by source and relative folder."""
         return _dict_result(
@@ -538,6 +550,9 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                     "mode": mode,
                     "limit": limit,
                     "per_document": per_document,
+                    "media_type": media_type,
+                    "modified_after": modified_after,
+                    "modified_before": modified_before,
                 },
             )
         )

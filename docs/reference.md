@@ -262,3 +262,8 @@ Semantic search retains vector_json and adds a float32 BLOB copy through migrati
 `fast-search` extra enables NumPy matrix scoring; without it the original JSON scorer remains
 available. A durable revision invalidates the per-provider/model matrix after index writes,
 including writes by other processes. Float32 scores can differ at rounding precision.
+
+Search adds `media_type`, `modified_after` and `modified_before` (CLI uses hyphenated flags).
+MIME matches extracted media type exactly. Dates accept ISO 8601; dates or naive timestamps
+use UTC, bounds are exclusive. Drive uses its source modified time; unknown times do not match
+a date filter. All filters apply to lexical, semantic and duplicate-location results.
