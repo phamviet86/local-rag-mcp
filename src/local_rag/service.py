@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Callable
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -226,6 +227,39 @@ class MultiSourceRAG:
 
     def enable_source(self, value: str, enabled: bool) -> dict[str, Any]:
         return self.registry.public(self.registry.enable(value, enabled))
+
+    def _relocate_source(self, value: str, new_path: str) -> None:
+        source = self.registry.get(value)
+        if source.kind != "local":
+            raise ValueError("only local sources can be relocated")
+        root = Path(new_path).expanduser().resolve()
+        if not root.is_dir():
+            raise ValueError("new source root must be an existing readable directory")
+        if root == self.settings.home or self.settings.home in root.parents:
+            raise ValueError("application data root cannot be indexed as a source")
+        if any(
+            record.id != source.id
+            and record.kind == "local"
+            and Path(record.locator).resolve() == root
+            for record in self.registry.list()
+        ):
+            raise ValueError("new root is already registered")
+        # Complete discovery before changing any identity; no authoritative writes.
+        list(self.indexer_for(replace(source, locator=str(root))).files())
+        old_root = Path(source.locator).resolve()
+        rows = self.db.document_snapshot(source.id)
+        updates = [(str(root / Path(row["path"]).relative_to(old_root)), row["id"]) for row in rows]
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE sources SET locator=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (str(root), source.id),
+            )
+            for path, document_id in updates:
+                connection.execute("UPDATE documents SET path=? WHERE id=?", (path, document_id))
+                connection.execute(
+                    "UPDATE reviews SET path=? WHERE document_id=?", (path, document_id)
+                )
+                self.db._refresh_metadata_index(connection, int(document_id))
 
     def remove_source(self, value: str) -> dict[str, Any]:
         source = self.registry.get(value)
@@ -476,9 +510,13 @@ class MultiSourceRAG:
                         current[key] = int(update[key])
                 self.jobs.progress(str(job["id"]), **current)
 
+            if job["kind"] == "relocate":
+                if not job.get("active_source") or not job.get("target"):
+                    raise ValueError("relocate requires source and new_path")
+                self._relocate_source(str(job["active_source"]), str(job["target"]))
             report = self.reconcile(
                 job.get("active_source"),
-                job.get("target"),
+                None if job["kind"] == "relocate" else job.get("target"),
                 force_index=job["kind"] == "reindex",
                 reextract=bool(job.get("reextract", False)),
                 full=bool(job.get("full", False)),

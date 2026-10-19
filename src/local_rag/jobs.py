@@ -26,8 +26,8 @@ class IndexJobManager:
         reextract: bool = False,
         full: bool = False,
     ) -> dict[str, Any]:
-        if kind not in {"reconcile", "reindex"}:
-            raise ValueError("job kind must be reconcile or reindex")
+        if kind not in {"reconcile", "reindex", "relocate"}:
+            raise ValueError("job kind must be reconcile, reindex or relocate")
         identifier = uuid.uuid4().hex
         with self.db.transaction() as connection:
             connection.execute(

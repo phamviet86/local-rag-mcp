@@ -227,3 +227,8 @@ falls back safely. No live Drive rename assumption has been verified by the offl
 Local reconcile reports `moved` for unique size/hash matches within a source. Matching runs before
 extraction and retains document IDs, corrections, metadata and relationships. Duplicate content
 or a move with an edit uses normal indexing/deletion; identity cannot be inferred safely.
+
+Use `source relocate NAME NEW_PATH` (CLI) or admin MCP `relocate_source(source,new_path)`
+to point an existing local source at a folder already moved by its operator. The durable job
+validates discovery, rewrites document/review paths transactionally, then reconciles. It never
+moves source files. Restart an existing watcher after relocation so its watched roots refresh.

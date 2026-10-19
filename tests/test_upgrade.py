@@ -82,3 +82,34 @@ def test_local_moves_preserve_identity_and_do_not_extract(tmp_path: Path):
     (root / "copy.txt").rename(root / "copy-moved.txt")
     report = service.reconcile()["sources"][0]
     assert report["moved"] == 0 and report["indexed"] == report["removed"] == 1
+
+
+def test_relocate_runs_as_admin_job_and_keeps_ids(tmp_path: Path):
+    import pytest
+
+    from local_rag.mcp import MCPServer
+
+    root, home = tmp_path / "old", tmp_path / "home"
+    root.mkdir()
+    (root / "note.txt").write_text("orchard")
+    service = MultiSourceRAG(Settings(root=home, home=home))
+    source = service.add_local_source("notes", root)
+    service.reconcile()
+    old = service.db.document_snapshot(source["id"])[0]
+    new = tmp_path / "new"
+    root.rename(new)
+    for profile in ("reader", "reviewer"):
+        with pytest.raises(ValueError, match="not exposed"):
+            MCPServer(service, profile).call(
+                "relocate_source", {"source": "notes", "new_path": str(new)}
+            )
+    result = MCPServer(service, "admin").call(
+        "relocate_source", {"source": "notes", "new_path": str(new)}
+    )
+    assert result["state"] == "complete"
+    updated = service.db.document_snapshot(source["id"])[0]
+    assert updated["id"] == old["id"] and updated["path"] == str(new / "note.txt")
+    assert (new / "note.txt").read_text() == "orchard"
+    result = service.start_index_job("relocate", "notes", str(root), background=False)
+    assert result["state"] == "error"
+    assert service.registry.get("notes").locator == str(new)

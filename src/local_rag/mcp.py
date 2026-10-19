@@ -172,6 +172,14 @@ REVIEWER_TOOLS = [
 
 ADMIN_TOOLS = [
     {
+        "name": "relocate_source",
+        "description": "Relocate a local source index to an existing folder, then reconcile.",
+        "inputSchema": _schema(
+            {"source": {"type": "string"}, "new_path": {"type": "string"}},
+            ["source", "new_path"],
+        ),
+    },
+    {
         "name": "start_reconcile",
         "description": "Queue an incremental reconcile and return its durable job ID.",
         "inputSchema": _schema(
@@ -345,6 +353,10 @@ class MCPServer:
                 )
                 if multi
                 else self.service.add_relationship(*arguments)
+            )
+        if name == "relocate_source":
+            return self.service.start_index_job(
+                "relocate", values["source"], values["new_path"], background=False
             )
         if name == "reconcile":
             return (
@@ -715,6 +727,13 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                     "reindex",
                     {"source": source, "target": target, "reextract": reextract, "all": all},
                 )
+            )
+
+        @server.tool(annotations=indexing)
+        def relocate_source(source: str, new_path: str) -> dict[str, Any]:
+            """Relocate a local index without moving authoritative files."""
+            return _dict_result(
+                dispatcher.call("relocate_source", {"source": source, "new_path": new_path})
             )
 
         @server.tool(annotations=mutate)

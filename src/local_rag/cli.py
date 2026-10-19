@@ -72,6 +72,9 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     for name in ("enable", "disable"):
         subcommand = source_commands.add_parser(name)
         subcommand.add_argument("source")
+    relocate = source_commands.add_parser("relocate")
+    relocate.add_argument("source")
+    relocate.add_argument("new_path", type=Path)
     remove = source_commands.add_parser("remove")
     remove.add_argument("source")
     remove.add_argument("--yes", action="store_true", help="confirm local index/cache purge")
@@ -272,6 +275,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.token_file,
                 args.shared_drive_id,
                 args.exclude,
+            )
+        elif args.source_command == "relocate":
+            output = service.start_index_job(
+                "relocate", args.source, str(args.new_path.expanduser().resolve()), background=False
             )
         elif args.source_command in {"enable", "disable"}:
             output = service.enable_source(args.source, args.source_command == "enable")
