@@ -44,6 +44,7 @@ READER_TOOLS = [
                 "folder": {"type": "string"},
                 "mode": {"type": "string", "enum": list(SEARCH_MODES)},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "per_document": {"type": "integer", "minimum": 1, "maximum": 100, "default": 3},
             },
             ["query"],
         ),
@@ -279,12 +280,14 @@ class MCPServer:
                     values.get("source"),
                     values.get("folder"),
                     values.get("mode", "hybrid"),
+                    int(values.get("per_document", 3)),
                 )
             return self.service.search(
                 values["query"],
                 int(values.get("limit", 8)),
                 values.get("folder") or values.get("scope"),
                 values.get("mode", "hybrid"),
+                int(values.get("per_document", 3)),
             )
         if name == "read":
             if multi:
@@ -522,12 +525,20 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         folder: str | None = None,
         mode: str = "hybrid",
         limit: int = 8,
+        per_document: int = 3,
     ) -> dict[str, Any]:
         """Search globally or filter by source and relative folder."""
         return _dict_result(
             dispatcher.call(
                 "search",
-                {"query": query, "source": source, "folder": folder, "mode": mode, "limit": limit},
+                {
+                    "query": query,
+                    "source": source,
+                    "folder": folder,
+                    "mode": mode,
+                    "limit": limit,
+                    "per_document": per_document,
+                },
             )
         )
 

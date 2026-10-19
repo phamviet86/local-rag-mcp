@@ -177,3 +177,27 @@ def test_hit_offsets_and_read_around_match_effective_text(tmp_path: Path):
         )
         assert expanded["text"] == text[expanded["start"] : expanded["end"]]
         assert expanded["start"] <= hit["start_char"] < expanded["end"]
+
+
+def test_diversify_and_collapse_keep_scoped_locations(tmp_path: Path):
+    root, home = tmp_path / "root", tmp_path / "home"
+    root.mkdir()
+    text = "\n".join(f"orchard harvest section {i} " * 8 for i in range(10))
+    (root / "one.txt").write_text(text)
+    (root / "copy.txt").write_text(text)
+    service = MultiSourceRAG(Settings(root=home, home=home, chunk_chars=100, chunk_overlap=10))
+    service.add_local_source("notes", root)
+    service.reconcile()
+    results = service.search("orchard", limit=100, mode="full_text", per_document=1)["results"]
+    refs = [hit["stable_ref"] for hit in results]
+    assert len(refs) == len(set(refs))
+    hashes = [hit["chunk_hash"] for hit in results if hit["chunk_hash"]]
+    assert len(hashes) == len(set(hashes))
+    assert any(
+        {location["path"] for location in hit.get("locations", [])} == {"one.txt", "copy.txt"}
+        for hit in results
+    )
+    results = service.search("orchard", folder="one.txt", mode="full_text")["results"]
+    assert all(
+        location["path"] == "one.txt" for hit in results for location in hit.get("locations", [])
+    )

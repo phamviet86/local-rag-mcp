@@ -109,6 +109,7 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     search.add_argument("--source")
     search.add_argument("--folder", "--scope", dest="folder")
     search.add_argument("--limit", type=int, default=8)
+    search.add_argument("--per-document", type=int, default=3)
     search.add_argument("--mode", choices=SEARCH_MODES, default="hybrid")
     read = commands.add_parser("read", help="read one cached indexed artifact")
     read.add_argument("path")
@@ -311,7 +312,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             output = service.run_index_job(str(job["id"]))
     elif command == "search":
-        output = service.search(args.query, args.limit, args.source, args.folder, args.mode)
+        output = service.search(
+            args.query, args.limit, args.source, args.folder, args.mode, args.per_document
+        )
     elif command == "read":
         output = service.read(
             args.path, args.source, args.start, args.length, args.around, args.window

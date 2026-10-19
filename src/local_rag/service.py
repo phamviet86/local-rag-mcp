@@ -81,8 +81,11 @@ class LocalRAG:
         limit: int = 8,
         scope: str | None = None,
         mode: str = "hybrid",
+        per_document: int = 3,
     ) -> dict[str, Any]:
-        return self.search_engine.search(query, limit, scope, mode, self.indexer.source_id)
+        return self.search_engine.search(
+            query, limit, scope, mode, self.indexer.source_id, per_document
+        )
 
     def read(
         self,
@@ -412,6 +415,7 @@ class MultiSourceRAG:
         source: str | None = None,
         folder: str | None = None,
         mode: str = "hybrid",
+        per_document: int = 3,
     ) -> dict[str, Any]:
         if not self.registry.list(enabled=True):
             return {
@@ -428,7 +432,7 @@ class MultiSourceRAG:
                     "local-rag-mcp source add-local NAME FOLDER",
                 ),
             }
-        result = self.search_engine.search(query, limit, folder, mode, source)
+        result = self.search_engine.search(query, limit, folder, mode, source, per_document)
         result["index_status"] = self.index_status()
         result["coverage"] = self.index_coverage(source, folder)
         if result["coverage"]["notice"]:

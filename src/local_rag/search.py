@@ -4,7 +4,7 @@ import json
 import math
 import re
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,9 +43,12 @@ class SearchEngine:
         scope: str | None = None,
         mode: str = "hybrid",
         source: str | None = None,
+        per_document: int = 3,
     ) -> dict[str, Any]:
         if mode not in SEARCH_MODES:
             raise ValueError(f"mode must be one of: {', '.join(SEARCH_MODES)}")
+        if not 1 <= per_document <= 100:
+            raise ValueError("per_document must be between 1 and 100")
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
         terms = re.findall(r"\w+", query, flags=re.UNICODE)
@@ -68,6 +71,7 @@ class SearchEngine:
         if mode == "hybrid" and not semantic:
             effective_mode = "full_text"
         results = self._combine(lexical, semantic, limit, effective_mode)
+        results = self._diversify(results, per_document, limit, relative_scope, source)
         return {
             "mode": mode,
             "effective_mode": effective_mode,
@@ -219,7 +223,67 @@ class SearchEngine:
             else:
                 score = lexical_score
             output.append(self._result(entry, score))
-        return sorted(output, key=lambda item: item["score"], reverse=True)[:limit]
+        return sorted(output, key=lambda item: item["score"], reverse=True)
+
+    def _diversify(
+        self,
+        results: list[dict[str, Any]],
+        per_document: int,
+        limit: int,
+        scope: str | None,
+        source: str | None,
+    ) -> list[dict[str, Any]]:
+        counts: Counter[str] = Counter()
+        seen: set[str] = set()
+        selected = []
+        for result in results:
+            key = result["chunk_hash"]
+            if key and key in seen:
+                continue
+            if counts[result["stable_ref"]] >= per_document:
+                continue
+            counts[result["stable_ref"]] += 1
+            if key:
+                seen.add(key)
+            selected.append(result)
+            if len(selected) == limit:
+                break
+        # Fetch every scoped location, including copies outside the ranked candidate
+        # window. Never disclose disabled sources or locations outside strict scope.
+        filter_sql, values = _filter_sql(scope, source)
+        with self.db.connect() as connection:
+            for result in selected:
+                if not result["chunk_hash"]:
+                    continue
+                rows = connection.execute(
+                    f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
+                        d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,
+                        s.name source_name,s.kind source_kind FROM chunks c
+                        JOIN documents d ON d.id=c.document_id JOIN sources s ON s.id=d.source_id
+                        WHERE c.chunk_hash=? AND s.enabled=1 {filter_sql}
+                        ORDER BY d.id,c.ordinal""",
+                    [result["chunk_hash"], *values],
+                ).fetchall()
+                result["locations"] = [
+                    {
+                        key: hit[key]
+                        for key in (
+                            "stable_ref",
+                            "document_ref",
+                            "source",
+                            "path",
+                            "chunk_ordinal",
+                            "start_char",
+                            "end_char",
+                            "citation",
+                        )
+                    }
+                    for row in rows
+                    for hit in [
+                        self._result({"row": row, "matched_via": "content"}, result["score"])
+                    ]
+                ]
+        return selected
 
     @staticmethod
     def _result(entry: dict[str, Any], score: float) -> dict[str, Any]:
@@ -236,6 +300,7 @@ class SearchEngine:
             "path": row["relative_path"],
             "document_ref": f"{row['source_name']}:{row['relative_path']}",
             "stable_ref": stable_ref(row),
+            "chunk_hash": None if is_metadata else row["chunk_hash"],
             "chunk_ordinal": None if is_metadata else row["ordinal"],
             "start_char": None if is_metadata else row["start_char"],
             "end_char": None if is_metadata else row["end_char"],
