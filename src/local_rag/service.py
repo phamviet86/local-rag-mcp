@@ -87,6 +87,8 @@ class LocalRAG:
         media_type: str | None = None,
         modified_after: str | None = None,
         modified_before: str | None = None,
+        match: str = "any",
+        doc_no: str | None = None,
     ) -> dict[str, Any]:
         return self.search_engine.search(
             query,
@@ -98,6 +100,19 @@ class LocalRAG:
             media_type,
             modified_after,
             modified_before,
+            match,
+            doc_no,
+        )
+
+    def get_chunk(
+        self,
+        cite_key: str | None = None,
+        document_ref: str | None = None,
+        ordinal: int | None = None,
+        neighbors: int = 0,
+    ) -> dict[str, Any]:
+        return self.search_engine.get_chunk(
+            cite_key, document_ref, ordinal, neighbors, self.indexer.source_id
         )
 
     def read(
@@ -434,6 +449,8 @@ class MultiSourceRAG:
         media_type: str | None = None,
         modified_after: str | None = None,
         modified_before: str | None = None,
+        match: str = "any",
+        doc_no: str | None = None,
     ) -> dict[str, Any]:
         if not self.registry.list(enabled=True):
             return {
@@ -460,12 +477,24 @@ class MultiSourceRAG:
             media_type,
             modified_after,
             modified_before,
+            match,
+            doc_no,
         )
         result["index_status"] = self.index_status()
         result["coverage"] = self.index_coverage(source, folder)
         if result["coverage"]["notice"]:
             result["warnings"].append(result["coverage"]["notice"])
         return result
+
+    def get_chunk(
+        self,
+        cite_key: str | None = None,
+        document_ref: str | None = None,
+        ordinal: int | None = None,
+        neighbors: int = 0,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        return self.search_engine.get_chunk(cite_key, document_ref, ordinal, neighbors, source)
 
     def index_coverage(
         self,

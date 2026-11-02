@@ -145,3 +145,12 @@ Reader doctor exposes a generic sync error. Use aggregate coverage to disclose i
 
 Local document IDs are allocated monotonically after upgrade; deleting a document does not
 allow its stable ref to resolve to an unrelated later document. Existing IDs are preserved.
+
+## Legal citations (structure-aware chunks)
+
+For Vietnamese legal text, cite the hit's `cite_key` (số hiệu, Điều, khoản), `page_start`/`page_end`
+and `doc_no`. Use `get_chunk` (reader, read-only) with `neighbors` 1-3 to read surrounding articles
+before answering. If `ocr` is true, state "OCR, chưa kiểm chứng" and ask the user to open the original
+page before relying on a quoted figure. Rows without `cite_key` predate the upgrade and need an
+operator `reindex --reextract`. Use `search --doc-no` / a document-number query to anchor a document,
+and `eval` to measure retrieval quality against a question set.

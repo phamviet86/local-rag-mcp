@@ -431,6 +431,7 @@ class MultiSourceTests(unittest.TestCase):
             {
                 "search",
                 "read",
+                "get_chunk",
                 "status",
                 "doctor",
                 "index_status",

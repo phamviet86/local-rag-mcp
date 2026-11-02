@@ -22,6 +22,11 @@ or repair when in scope. A skill describes a tool workflow; it does not itself e
    and unknown listing completeness. Use `index_coverage` with the same source/folder and paginate
    with `next_offset` when details matter. Zero matches with incomplete coverage is not proof of absence.
 
+6. For legal text, cite `cite_key`, `doc_no`, `page_start`/`page_end` and read neighbouring articles
+   with `get_chunk` (`neighbors` 1-3). When `ocr` is true, say "OCR, chưa kiểm chứng" and ask the
+   user to open the original page before quoting. A document number or `doc_no` ranks that document
+   first; `match` may be `any` (default), `all` or `phrase`.
+
 `hybrid` may fall back to full text when embeddings are unavailable; report that limitation without
 claiming the entire index is unusable. Missing OCR affects OCR-routed PDF pages while native text and
 other formats remain usable. `no_enabled_sources` is an initialized empty state requiring a chosen

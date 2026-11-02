@@ -6,15 +6,23 @@ import os
 import stat
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .db import Database
+from .db import Database, stable_ref
 from .embeddings import EmbeddingProvider, cache_identity
 from .extract import Extractor
 from .extraction_errors import error_fields
+from .legal import (
+    Section,
+    find_numbers,
+    make_cite_key,
+    make_key,
+    split_markdown,
+    split_sections,
+)
 from .models import ChunkRecord, ExtractedDocument, SourceSpan
 
 ProgressCallback = Callable[[dict[str, int | str]], None]
@@ -273,7 +281,7 @@ class Indexer:
         extracted, artifact = self._extract_cached(
             snapshot.path, content_hash, use_cache=not reextract
         )
-        chunks = _chunks(extracted, self.settings.chunk_chars, self.settings.chunk_overlap)
+        chunks = _make_chunks(extracted, self.settings)
         automatic = _automatic_metadata(snapshot, extracted, content_hash)
         return PreparedDocument(snapshot, content_hash, extracted, artifact, chunks, automatic)
 
@@ -286,7 +294,7 @@ class Indexer:
                 f"cached {kind} artifact is missing: {artifact}; rerun with --reextract"
             )
         extracted = _document_from_artifact(json.loads(artifact.read_text(encoding="utf-8")))
-        chunks = _chunks(extracted, self.settings.chunk_chars, self.settings.chunk_overlap)
+        chunks = _make_chunks(extracted, self.settings)
         automatic = json.loads(current["metadata_json"])
         if current["source_url"]:
             automatic.update(
@@ -436,6 +444,11 @@ class Indexer:
                     document.source_url,
                 ),
             )
+        doc_no = document.automatic.get("doc_no")
+        connection.execute(
+            "UPDATE documents SET doc_no=?,doc_no_key=? WHERE id=?",
+            (doc_no, make_key(doc_no) if doc_no else None, document_id),
+        )
         self._insert_chunks(connection, document_id, relative, title, document.chunks)
         for review in () if document.preserve_derived_state else document.extracted.reviews:
             connection.execute(
@@ -471,7 +484,7 @@ class Indexer:
             content_hash,
             extracted,
             artifact_path,
-            _chunks(extracted, self.settings.chunk_chars, self.settings.chunk_overlap),
+            _make_chunks(extracted, self.settings),
             metadata,
             relative_path=relative_path,
             external_id=external_id,
@@ -489,11 +502,20 @@ class Indexer:
         title: str,
         chunks: Sequence[ChunkRecord],
     ) -> None:
+        identity = connection.execute(
+            """SELECT d.id,d.source_id,d.external_id,d.doc_no,s.kind source_kind
+               FROM documents d JOIN sources s ON s.id=d.source_id WHERE d.id=?""",
+            (document_id,),
+        ).fetchone()
+        prefix = (identity["doc_no"] or stable_ref(identity)) if identity else str(document_id)
+        taken: set[str] = set()
         for chunk in chunks:
+            cite_key = make_cite_key(prefix, [chunk.cite_key or f"c{chunk.ordinal}"], taken)
             cursor = connection.execute(
                 """INSERT INTO chunks
-                   (document_id,ordinal,text,start_char,end_char,chunk_hash,provenance_json,page_number)
-                   VALUES(?,?,?,?,?,?,?,?)""",
+                   (document_id,ordinal,text,start_char,end_char,chunk_hash,provenance_json,
+                    page_number,cite_key,section_path,page_start,page_end,ocr)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     document_id,
                     chunk.ordinal,
@@ -503,6 +525,11 @@ class Indexer:
                     chunk.chunk_hash,
                     json.dumps(chunk.provenance),
                     _chunk_page(chunk.provenance),
+                    cite_key,
+                    json.dumps(list(chunk.section_path), ensure_ascii=False),
+                    chunk.page_start,
+                    chunk.page_end,
+                    int(chunk.ocr),
                 ),
             )
             connection.execute(
@@ -646,7 +673,7 @@ class Indexer:
         temporary.write_text(json.dumps(effective, ensure_ascii=False), encoding="utf-8")
         temporary.replace(artifact)
         extracted = _document_from_artifact(effective)
-        chunks = _chunks(extracted, self.settings.chunk_chars, self.settings.chunk_overlap)
+        chunks = _make_chunks(extracted, self.settings)
         with self.db.connect() as connection:
             document_metadata = json.loads(
                 connection.execute(
@@ -840,6 +867,80 @@ def _chunks(document: ExtractedDocument, size: int, overlap: int) -> list[ChunkR
     return chunks
 
 
+def _page_info(provenance: Sequence[dict[str, Any]]) -> tuple[int | None, int | None, bool]:
+    pages: list[int] = []
+    ocr = False
+    for item in provenance:
+        locator = str(item.get("locator", ""))
+        if item.get("kind") == "pdf_page" and locator.startswith("page:"):
+            pages.append(int(locator.split(":", 1)[1]))
+            if item.get("metadata", {}).get("source", "native") != "native":
+                ocr = True
+    return (min(pages), max(pages), ocr) if pages else (None, None, False)
+
+
+def detect_doc_no(document: ExtractedDocument) -> str | None:
+    """Document number from the first page (or the first 3000 characters when unpaged)."""
+    first = next((s for s in document.spans if s.kind == "pdf_page"), None)
+    head = document.text[first.start : first.end] if first else document.text[:3000]
+    numbers = find_numbers(head[:3000])
+    return numbers[0] if numbers else None
+
+
+def _annotate(document: ExtractedDocument, chunk: ChunkRecord) -> ChunkRecord:
+    start, end, ocr = _page_info(chunk.provenance)
+    return replace(chunk, page_start=start, page_end=end, ocr=ocr)
+
+
+def _make_chunks(document: ExtractedDocument, settings: Settings) -> list[ChunkRecord]:
+    """Structure-aware chunks when configured and the text has structure, else windows."""
+    if settings.chunk_strategy == "structure":
+        structured = _chunks_structured(document, settings.structure_max_chars)
+        if structured:
+            return structured
+    return [
+        replace(_annotate(document, chunk), cite_key=f"c{chunk.ordinal}")
+        for chunk in _chunks(document, settings.chunk_chars, settings.chunk_overlap)
+    ]
+
+
+def _chunks_structured(document: ExtractedDocument, max_chars: int) -> list[ChunkRecord]:
+    """One chunk per Điều (or Markdown section); cite_key holds the suffix after ``#``."""
+    doc_no = detect_doc_no(document)
+    name = ""
+    sections: list[Section]
+    if document.media_type in {"text/markdown"}:
+        sections = split_markdown(document.text, doc_no, name)
+    else:
+        sections = split_sections(document.text, doc_no, name, max_chars)
+        if not sections:
+            sections = split_markdown(document.text, doc_no, name)
+    chunks: list[ChunkRecord] = []
+    for section in sections:
+        provenance = [
+            span.__dict__
+            for span in document.spans
+            if span.end > section.start and span.start < section.end
+        ]
+        start, end, ocr = _page_info(provenance)
+        chunks.append(
+            ChunkRecord(
+                len(chunks),
+                section.text,
+                section.start,
+                section.end,
+                hashlib.sha256(section.text.encode()).hexdigest(),
+                provenance,
+                section.key_parts[0],
+                tuple(section.path),
+                start,
+                end,
+                ocr,
+            )
+        )
+    return chunks
+
+
 def _chunk_page(provenance: Sequence[dict[str, Any]]) -> int | None:
     pages = {
         int(item["locator"].split(":", 1)[1])
@@ -855,8 +956,10 @@ def _automatic_metadata(
     path = snapshot.path
     first = next((line.strip("# ") for line in document.text.splitlines() if line.strip()), "")
     title = first[:160] if path.suffix.lower() in {".md", ".markdown"} and first else path.stem
+    doc_no = detect_doc_no(document)
     return {
         "title": title,
+        **({"doc_no": doc_no} if doc_no else {}),
         "extension": path.suffix.lower(),
         "size": snapshot.size,
         "modified_ns": snapshot.modified_ns,

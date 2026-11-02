@@ -394,8 +394,22 @@ def test_populated_v090_migrations_preserve_rows_vectors_and_chunk_text(tmp_path
         assert connection.execute(
             "SELECT count(*) FROM vectors WHERE vector_blob IS NOT NULL"
         ).fetchone()[0] == len(payload["tables"]["vectors"])
+        # Migration 8 leaves legal-structure columns empty until a reextract reindex.
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM chunks WHERE cite_key IS NOT NULL OR ocr<>0"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM documents WHERE doc_no IS NOT NULL"
+            ).fetchone()[0]
+            == 0
+        )
     assert service.read("default:scan.pdf")["has_review_corrections"]
-    assert service.search("duong", mode="full_text")["results"]
+    old = service.search("duong", mode="full_text")["results"]
+    assert old and old[0]["cite_key"] is None and old[0]["ocr"] is False
     for document in payload["tables"]["documents"]:
         path = document["effective_artifact_path"] or document["artifact_path"]
         extracted = _document_from_artifact(payload["artifacts"][path])

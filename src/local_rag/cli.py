@@ -12,7 +12,7 @@ from typing import Any
 
 from . import __version__
 from .config import Settings, default_home, parse_exclusions
-from .search import SEARCH_MODES
+from .search import MATCH_MODES, SEARCH_MODES
 from .service import MultiSourceRAG
 
 
@@ -114,6 +114,19 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     search.add_argument("--modified-after")
     search.add_argument("--modified-before")
     search.add_argument("--mode", choices=SEARCH_MODES, default="hybrid")
+    search.add_argument("--match", choices=MATCH_MODES, default="any")
+    search.add_argument("--doc-no", help="legal document number to rank first")
+    chunk = commands.add_parser("chunk", help="read one chunk by cite_key with neighbours")
+    chunk.add_argument("cite_key")
+    chunk.add_argument("--source")
+    chunk.add_argument("--neighbors", type=int, default=0)
+    evaluate = commands.add_parser("eval", help="measure recall@k of gold cite_keys")
+    evaluate.add_argument("file", type=Path, help="JSONL: id, question, gold[], type, diacritics")
+    evaluate.add_argument("--k", type=int, default=3, choices=(1, 3, 10))
+    evaluate.add_argument("--target", type=float, default=0.8)
+    evaluate.add_argument("--mode", choices=SEARCH_MODES, default="hybrid")
+    evaluate.add_argument("--match", choices=MATCH_MODES, default="any")
+    evaluate.add_argument("--source")
     read = commands.add_parser("read", help="read one cached indexed artifact")
     read.add_argument("path")
     read.add_argument("--source")
@@ -325,7 +338,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.media_type,
             args.modified_after,
             args.modified_before,
+            args.match,
+            args.doc_no,
         )
+    elif command == "chunk":
+        output = service.get_chunk(args.cite_key, None, None, args.neighbors, args.source)
+    elif command == "eval":
+        output = _evaluate(service, args)
     elif command == "read":
         output = service.read(
             args.path, args.source, args.start, args.length, args.around, args.window
@@ -400,6 +419,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         if output.get("errors"):
             return 1
     return 0
+
+
+def _evaluate(service: MultiSourceRAG, args: argparse.Namespace) -> dict[str, Any]:
+    from .evaluation import evaluate, load_questions
+
+    def search(question: str) -> list[dict[str, Any]]:
+        found = service.search(question, 10, args.source, None, args.mode, 10, match=args.match)
+        return list(found.get("results", []))
+
+    def exists(cite_key: str) -> bool:
+        with service.db.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM chunks WHERE cite_key=? OR cite_key LIKE ? LIMIT 1",
+                (cite_key, cite_key + "-khoan-%"),
+            ).fetchone()
+        return row is not None
+
+    report = evaluate(load_questions(args.file), search, exists)
+    score = report[f"recall@{args.k}"]
+    report["target"] = {"k": args.k, "minimum": args.target, "met": score >= args.target}
+    if score < args.target:
+        report["errors"] = [f"recall@{args.k} {score} is below target {args.target}"]
+    return report
 
 
 def legacy_main(argv: Sequence[str] | None = None) -> int:

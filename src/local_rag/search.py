@@ -13,8 +13,10 @@ from typing import Any
 from .config import Settings
 from .db import Database, fts_fold, stable_ref
 from .embeddings import EmbeddingProvider, cache_identity
+from .legal import is_number_query, make_key
 
 SEARCH_MODES = ("full_text", "semantic", "hybrid")
+MATCH_MODES = ("any", "all", "phrase")
 
 
 class SemanticSearchUnavailable(RuntimeError):
@@ -50,7 +52,11 @@ class SearchEngine:
         media_type: str | None = None,
         modified_after: str | None = None,
         modified_before: str | None = None,
+        match: str = "any",
+        doc_no: str | None = None,
     ) -> dict[str, Any]:
+        if match not in MATCH_MODES:
+            raise ValueError(f"match must be one of: {', '.join(MATCH_MODES)}")
         if mode not in SEARCH_MODES:
             raise ValueError(f"mode must be one of: {', '.join(SEARCH_MODES)}")
         if not 1 <= per_document <= 100:
@@ -65,7 +71,7 @@ class SearchEngine:
         _filter_sql(relative_scope, source, *filters)  # Validate even for an empty index.
         warnings: list[str] = []
         lexical = (
-            self._full_text(terms, relative_scope, source, limit, filters)
+            self._full_text(terms, relative_scope, source, limit, filters, match)
             if mode != "semantic"
             else {}
         )
@@ -81,9 +87,13 @@ class SearchEngine:
         if mode == "hybrid" and not semantic:
             effective_mode = "full_text"
         results = self._combine(lexical, semantic, limit, effective_mode)
+        results = self._prioritize_document_number(
+            results, query, doc_no, relative_scope, source, filters, limit
+        )
         results = self._diversify(results, per_document, limit, relative_scope, source, filters)
         return {
             "mode": mode,
+            "match": match,
             "effective_mode": effective_mode,
             "scope": relative_scope,
             "source": source,
@@ -98,14 +108,19 @@ class SearchEngine:
         source: str | None,
         limit: int,
         filters: tuple[str | None, str | None, str | None] = (None, None, None),
+        match: str = "any",
     ) -> dict[tuple[str, int], dict[str, Any]]:
-        fts_query = " OR ".join(f'"{fts_fold(term)}"' for term in terms)
+        quoted = [f'"{fts_fold(term)}"' for term in terms]
+        if match == "phrase":
+            fts_query = '"' + " ".join(fts_fold(term) for term in terms) + '"'
+        else:
+            fts_query = (" AND " if match == "all" else " OR ").join(quoted)
         filter_sql, filter_values = _filter_sql(scope, source, *filters)
         candidate_limit = max(20, limit * 4)
         with self.db.connect() as connection:
             chunks = connection.execute(
                 f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
-                           d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,
+                           d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,d.doc_no,
                            s.name source_name,s.kind source_kind
                     FROM chunks_fts JOIN chunks c ON c.id=CAST(chunks_fts.chunk_id AS INTEGER)
                     JOIN documents d ON d.id=c.document_id
@@ -117,7 +132,7 @@ class SearchEngine:
             metadata = connection.execute(
                 f"""SELECT m.rowid metadata_id,m.content,m.kind,m.provenance,
                            d.id document_id,d.relative_path,d.title,d.content_hash,d.metadata_json,
-                           d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,
+                           d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,d.doc_no,
                            s.name source_name,s.kind source_kind
                     FROM metadata_fts m JOIN documents d ON d.id=CAST(m.document_id AS INTEGER)
                     JOIN sources s ON s.id=d.source_id
@@ -152,6 +167,45 @@ class SearchEngine:
             }
         return results
 
+    def _prioritize_document_number(
+        self,
+        results: list[dict[str, Any]],
+        query: str,
+        doc_no: str | None,
+        scope: str | None,
+        source: str | None,
+        filters: tuple[str | None, str | None, str | None],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        number_query = doc_no is None and is_number_query(query)
+        wanted = doc_no if doc_no is not None else (query.strip() if number_query else None)
+        if not wanted:
+            return results
+        key = make_key(wanted)
+        filter_sql, values = _filter_sql(scope, source, *filters)
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
+                           d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,d.doc_no,
+                           s.name source_name,s.kind source_kind
+                    FROM chunks c JOIN documents d ON d.id=c.document_id
+                    JOIN sources s ON s.id=d.source_id
+                    WHERE d.doc_no_key=? AND s.enabled=1 {filter_sql}
+                    ORDER BY d.id,c.ordinal LIMIT ?""",
+                [key, *values, limit],
+            ).fetchall()
+        if not rows:
+            return results
+        matched = {stable_ref(row) for row in rows}
+        priority = [
+            self._result({"row": row, "matched_via": "doc_no"}, 1.0) for row in rows if number_query
+        ]
+        boosted = [item for item in results if item["stable_ref"] in matched]
+        rest = [item for item in results if item["stable_ref"] not in matched]
+        if not number_query and not boosted:
+            boosted = [self._result({"row": row, "matched_via": "doc_no"}, 1.0) for row in rows[:3]]
+        return [*priority, *boosted, *rest]
+
     def _semantic(
         self,
         query: str,
@@ -169,7 +223,7 @@ class SearchEngine:
             connection.execute("BEGIN")
             rows = connection.execute(
                 f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
-                           d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,
+                           d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,d.doc_no,
                            s.name source_name,s.kind source_kind,
                            v.vector_json,v.vector_blob
                     FROM chunks c JOIN documents d ON d.id=c.document_id
@@ -338,7 +392,7 @@ class SearchEngine:
                     continue
                 rows = connection.execute(
                     f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
-                        d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,
+                        d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,d.doc_no,
                         s.name source_name,s.kind source_kind FROM chunks c
                         JOIN documents d ON d.id=c.document_id JOIN sources s ON s.id=d.source_id
                         WHERE c.chunk_hash=? AND s.enabled=1 {filter_sql}
@@ -375,7 +429,23 @@ class SearchEngine:
             {key: item[key] for key in ("path", "kind", "locator", "quote") if key in item}
             for item in provenance[:4]
         ]
+        keys = set(row.keys())
+
+        def chunk_field(name: str) -> Any:
+            return None if is_metadata or name not in keys else row[name]
+
+        ocr = bool(chunk_field("ocr"))
+        raw_path = chunk_field("section_path")
         return {
+            "cite_key": chunk_field("cite_key"),
+            "page_start": chunk_field("page_start"),
+            "page_end": chunk_field("page_end"),
+            "ocr": ocr,
+            "ocr_notice": (
+                "OCR, chưa kiểm chứng: mở trang gốc trước khi trích dẫn" if ocr else None
+            ),
+            "section_path": json.loads(raw_path) if raw_path else None,
+            "doc_no": row["doc_no"] if "doc_no" in keys else None,
             "source": row["source_name"],
             "source_kind": row["source_kind"],
             "path": row["relative_path"],
@@ -407,6 +477,10 @@ class SearchEngine:
                 "path": row["relative_path"],
                 "content_hash": row["content_hash"],
                 "page": row["page_number"] if not is_metadata else None,
+                "cite_key": chunk_field("cite_key"),
+                "page_start": chunk_field("page_start"),
+                "page_end": chunk_field("page_end"),
+                "doc_no": row["doc_no"] if "doc_no" in keys else None,
                 "locators": [item.get("locator") for item in concise_provenance],
             },
             "metadata": json.loads(row["metadata_json"]),
@@ -426,6 +500,75 @@ class SearchEngine:
         if not normalized or normalized == ".":
             raise ValueError("folder scope must identify a relative folder")
         return normalized
+
+    def get_chunk(
+        self,
+        cite_key: str | None = None,
+        document_ref: str | None = None,
+        ordinal: int | None = None,
+        neighbors: int = 0,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        """Return one chunk by cite_key or document_ref+ordinal, with optional neighbours."""
+        if not 0 <= neighbors <= 3:
+            raise ValueError("neighbors must be between 0 and 3")
+        if bool(cite_key) == bool(document_ref):
+            raise ValueError("provide exactly one of cite_key or document_ref with ordinal")
+        columns = """SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
+                     d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,d.doc_no,
+                     s.name source_name,s.kind source_kind
+                     FROM chunks c JOIN documents d ON d.id=c.document_id
+                     JOIN sources s ON s.id=d.source_id"""
+        source_sql = "AND (d.source_id=? OR s.name=?)" if source else ""
+        source_values = [source, source] if source else []
+        warnings: list[str] = []
+        with self.db.connect() as connection:
+            if cite_key:
+                rows = connection.execute(
+                    f"{columns} WHERE c.cite_key=? AND s.enabled=1 {source_sql} "
+                    "ORDER BY d.id,c.ordinal",
+                    [cite_key, *source_values],
+                ).fetchall()
+                if not rows:
+                    raise ValueError(f"no indexed chunk has cite_key: {cite_key}")
+                if len({row["document_id"] for row in rows}) > 1:
+                    warnings.append(
+                        "cite_key matches several documents; returning the first. "
+                        "Use document_ref with ordinal to choose another."
+                    )
+                row = rows[0]
+            else:
+                if ordinal is None or ordinal < 0:
+                    raise ValueError("ordinal must be a nonnegative integer")
+                document = self.db.resolve_document(str(document_ref), source)
+                found = connection.execute(
+                    f"{columns} WHERE c.document_id=? AND c.ordinal=? AND s.enabled=1",
+                    [document["id"], ordinal],
+                ).fetchone()
+                if found is None:
+                    raise ValueError("no chunk with that ordinal in the document")
+                row = found
+            around = connection.execute(
+                f"{columns} WHERE c.document_id=? AND c.ordinal BETWEEN ? AND ? "
+                "AND c.ordinal<>? ORDER BY c.ordinal",
+                [
+                    row["document_id"],
+                    row["ordinal"] - neighbors,
+                    row["ordinal"] + neighbors,
+                    row["ordinal"],
+                ],
+            ).fetchall()
+
+        def full(item: Any) -> dict[str, Any]:
+            result = self._result({"row": item, "matched_via": "chunk"}, 1.0)
+            result["text"] = item["text"]
+            return result
+
+        return {
+            "chunk": full(row),
+            "neighbors": [full(item) for item in around],
+            "warnings": warnings,
+        }
 
     def read(
         self,

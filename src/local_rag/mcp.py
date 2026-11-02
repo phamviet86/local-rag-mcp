@@ -7,7 +7,7 @@ from typing import Any, TextIO
 
 from . import __version__
 from .config import Settings
-from .search import SEARCH_MODES
+from .search import MATCH_MODES, SEARCH_MODES
 from .service import LocalRAG, MultiSourceRAG
 
 AGENT_INSTRUCTIONS = (
@@ -46,6 +46,8 @@ READER_TOOLS = [
                 "source": {"type": "string"},
                 "folder": {"type": "string"},
                 "mode": {"type": "string", "enum": list(SEARCH_MODES)},
+                "match": {"type": "string", "enum": list(MATCH_MODES), "default": "any"},
+                "doc_no": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                 "per_document": {"type": "integer", "minimum": 1, "maximum": 100, "default": 3},
             },
@@ -80,6 +82,22 @@ READER_TOOLS = [
                 "window": {"type": "integer", "minimum": 1, "maximum": 100000},
             },
             ["path"],
+        ),
+    },
+    {
+        "name": "get_chunk",
+        "description": (
+            "Read one indexed chunk by cite_key (or document_ref plus ordinal) with up to "
+            "three neighbouring chunks on each side. Read-only."
+        ),
+        "inputSchema": _schema(
+            {
+                "cite_key": {"type": "string"},
+                "document_ref": {"type": "string"},
+                "ordinal": {"type": "integer", "minimum": 0},
+                "neighbors": {"type": "integer", "minimum": 0, "maximum": 3, "default": 0},
+                "source": {"type": "string"},
+            }
         ),
     },
     {
@@ -300,6 +318,8 @@ class MCPServer:
                     values.get("media_type"),
                     values.get("modified_after"),
                     values.get("modified_before"),
+                    values.get("match", "any"),
+                    values.get("doc_no"),
                 )
             return self.service.search(
                 values["query"],
@@ -310,6 +330,23 @@ class MCPServer:
                 values.get("media_type"),
                 values.get("modified_after"),
                 values.get("modified_before"),
+                values.get("match", "any"),
+                values.get("doc_no"),
+            )
+        if name == "get_chunk":
+            if multi:
+                return self.service.get_chunk(
+                    values.get("cite_key"),
+                    values.get("document_ref"),
+                    values.get("ordinal"),
+                    int(values.get("neighbors", 0)),
+                    values.get("source"),
+                )
+            return self.service.get_chunk(
+                values.get("cite_key"),
+                values.get("document_ref"),
+                values.get("ordinal"),
+                int(values.get("neighbors", 0)),
             )
         if name == "read":
             if multi:
@@ -551,8 +588,13 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         media_type: str | None = None,
         modified_after: str | None = None,
         modified_before: str | None = None,
+        match: str = "any",
+        doc_no: str | None = None,
     ) -> dict[str, Any]:
-        """Search globally or filter by source and relative folder."""
+        """Search globally or filter by source and relative folder.
+
+        match is any (default), all, or phrase; doc_no ranks that legal document first.
+        """
         return _dict_result(
             dispatcher.call(
                 "search",
@@ -566,6 +608,30 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                     "media_type": media_type,
                     "modified_after": modified_after,
                     "modified_before": modified_before,
+                    "match": match,
+                    "doc_no": doc_no,
+                },
+            )
+        )
+
+    @server.tool(annotations=read_only)
+    def get_chunk(
+        cite_key: str | None = None,
+        document_ref: str | None = None,
+        ordinal: int | None = None,
+        neighbors: int = 0,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        """Read one chunk by cite_key (or document_ref+ordinal) with up to 3 neighbours."""
+        return _dict_result(
+            dispatcher.call(
+                "get_chunk",
+                {
+                    "cite_key": cite_key,
+                    "document_ref": document_ref,
+                    "ordinal": ordinal,
+                    "neighbors": neighbors,
+                    "source": source,
                 },
             )
         )

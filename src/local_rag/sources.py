@@ -112,6 +112,8 @@ def source_settings(base: Settings, source: SourceRecord) -> Settings:
         exclusions=frozenset(exclusions),
         chunk_chars=base.chunk_chars,
         chunk_overlap=base.chunk_overlap,
+        chunk_strategy=base.chunk_strategy,
+        structure_max_chars=base.structure_max_chars,
         reconcile_seconds=base.reconcile_seconds,
         embedding_provider=base.embedding_provider,
         embedding_model=base.embedding_model,

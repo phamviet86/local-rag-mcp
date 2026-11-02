@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+- Add structure-aware chunking for Vietnamese legal text: one chunk per Điều (split by khoản when
+  longer than `structure_max_chars`, default 2000), a context line `số hiệu | tên | Chương | Điều`,
+  Markdown heading sections, and a fixed-window fallback (`chunk_strategy`: `structure` default or
+  `window`). Document numbers such as `66.13/2026/NQ-CP` are detected on the first page.
+- Migration 8 adds `chunks.cite_key/section_path/page_start/page_end/ocr` and
+  `documents.doc_no/doc_no_key`. Existing rows stay NULL until `reindex --reextract`; because chunk
+  text changes, chunk hashes change and embeddings are recomputed.
+- `search` gains `match` (`any` default, `all`, `phrase`) and `doc_no`; results add `cite_key`,
+  `page_start`, `page_end`, `ocr`, `ocr_notice`, `section_path`, `doc_no`. A query that is a
+  document number looks the document up first.
+- Add read-only MCP tool and CLI `get_chunk` / `chunk <cite_key> --neighbors N`, and
+  `eval <file.jsonl> --k --target` reporting recall@1/3/10 with failure groups (exit 1 below target).
+- Not verified against real data: how pdf-inspector emits "Điều N." lines on real legal PDFs, real
+  OCR output, large-corpus performance; document-number and heading patterns are reasoned by hand
+  and tested only on synthetic text. Điểm (a, b, c) are not split into separate chunks.
+
 ## [0.10.1] - 2026-10-19
 
 - Repair only hash-prefixed 6/8-digit XLSX style colors in a private, bounded temporary copy;

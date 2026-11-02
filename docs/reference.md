@@ -118,6 +118,24 @@ local-rag-mcp read contract.pdf --source legal-drive
 local-rag-mcp read legal-drive:contract.pdf
 ```
 
+Legal-document options (see [design-legal-structure.md](design-legal-structure.md)):
+
+```bash
+local-rag-mcp search "đối tượng áp dụng" --match phrase      # any (default) | all | phrase
+local-rag-mcp search "66.13/2026/NQ-CP"                       # a document number is looked up first
+local-rag-mcp search "tài sản công" --doc-no 99/2026/NĐ-CP   # rank that document's chunks first
+local-rag-mcp chunk "99/2026/NĐ-CP#dieu-2" --neighbors 1      # read one chunk and its neighbours
+local-rag-mcp eval questions.jsonl --k 3 --target 0.8         # exit 1 when recall@k is below target
+```
+
+Each hit carries `cite_key` (`<số hiệu>#dieu-5-khoan-2`, or `<stable_ref>#c<ordinal>` for windows),
+`page_start`/`page_end`, `section_path`, `doc_no`, and `ocr`. OCR hits add `ocr_notice`: open the
+original page before quoting. Rows indexed before this change have no `cite_key` until
+`reindex --reextract`, which also changes chunk hashes so embeddings are recomputed. `chunk_strategy`
+(`structure` or `window`) and `structure_max_chars` are settings in `config.json`.
+`eval` reads JSONL lines `{id, question, gold:[cite_key], type, diacritics}`; a gold Điều also accepts
+its khoản chunks.
+
 Modes are `full_text`, `semantic`, and `hybrid` (default). FTS5/BM25 remains local. Hybrid uses
 reciprocal-rank fusion of the ordered BM25 and semantic result lists. If query embeddings fail,
 hybrid returns FTS results with a warning; semantic-only fails clearly.
@@ -197,7 +215,7 @@ LOCAL_RAG_MCP_PROFILE=reviewer local-rag-mcp-server
 LOCAL_RAG_MCP_PROFILE=admin local-rag-mcp-server
 ```
 
-- `reader`: `search`, `read`, `status`, `doctor`, `index_status`, `job_status`, `sources`,
+- `reader`: `search`, `read`, `get_chunk`, `status`, `doctor`, `index_status`, `job_status`, `sources`,
   `metadata`, and `reviews`.
 - `reviewer`: reader tools plus page correction/review resolution and evidence-backed metadata and
   relationships.

@@ -30,3 +30,8 @@ class ChunkRecord:
     end: int
     chunk_hash: str
     provenance: list[dict[str, Any]]
+    cite_key: str | None = None
+    section_path: tuple[str, ...] = ()
+    page_start: int | None = None
+    page_end: int | None = None
+    ocr: bool = False

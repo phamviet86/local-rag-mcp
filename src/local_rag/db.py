@@ -177,6 +177,17 @@ MIGRATIONS = [
       UPDATE document_id_sequence SET next_id=MAX(next_id,NEW.id+1) WHERE singleton=1;
     END;
     """,
+    """
+    ALTER TABLE chunks ADD COLUMN cite_key TEXT;
+    ALTER TABLE chunks ADD COLUMN section_path TEXT;
+    ALTER TABLE chunks ADD COLUMN page_start INTEGER;
+    ALTER TABLE chunks ADD COLUMN page_end INTEGER;
+    ALTER TABLE chunks ADD COLUMN ocr INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX chunks_cite_key_idx ON chunks(document_id,cite_key);
+    ALTER TABLE documents ADD COLUMN doc_no TEXT;
+    ALTER TABLE documents ADD COLUMN doc_no_key TEXT;
+    CREATE INDEX documents_doc_no_key_idx ON documents(doc_no_key);
+    """,
 ]
 
 
