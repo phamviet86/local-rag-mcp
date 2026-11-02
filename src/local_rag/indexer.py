@@ -17,6 +17,7 @@ from .extract import Extractor
 from .extraction_errors import error_fields
 from .legal import (
     Section,
+    detect_doc_name,
     find_numbers,
     make_cite_key,
     make_key,
@@ -907,7 +908,9 @@ def _make_chunks(document: ExtractedDocument, settings: Settings) -> list[ChunkR
 def _chunks_structured(document: ExtractedDocument, max_chars: int) -> list[ChunkRecord]:
     """One chunk per Điều (or Markdown section); cite_key holds the suffix after ``#``."""
     doc_no = detect_doc_no(document)
-    name = ""
+    first = next((s for s in document.spans if s.kind == "pdf_page"), None)
+    head = document.text[first.start : first.end] if first else document.text[:3000]
+    name = detect_doc_name(head[:3000], doc_no)
     sections: list[Section]
     if document.media_type in {"text/markdown"}:
         sections = split_markdown(document.text, doc_no, name)

@@ -122,6 +122,39 @@ def _clause_spans(body: str) -> list[tuple[int, int, str]]:
     return spans
 
 
+def _point_spans(body: str) -> list[tuple[int, int, str]]:
+    """Return (start, end, letter) for each sequential điểm line (a, b, c, ...)."""
+    starts: list[tuple[int, str]] = []
+    position = 0
+    expected = ord("a")
+    for raw in body.splitlines(keepends=True):
+        match = _POINT.match(raw.strip())
+        if match and ord(match[1]) == expected:
+            starts.append((position, match[1]))
+            expected += 1
+        position += len(raw)
+    return [
+        (start, starts[i + 1][0] if i + 1 < len(starts) else len(body), letter)
+        for i, (start, letter) in enumerate(starts)
+    ]
+
+
+def detect_doc_name(head: str, doc_no: str | None) -> str:
+    """Document title: the first short non-heading line after the line holding the number."""
+    lines = [line.strip() for line in head.splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if doc_no and doc_no in line:
+            for candidate in lines[index + 1 : index + 3]:
+                if (
+                    len(candidate) < 200
+                    and not _ARTICLE.match(candidate)
+                    and not _CHAPTER.match(candidate)
+                ):
+                    return candidate
+            break
+    return ""
+
+
 def split_sections(
     text: str, doc_no: str | None = None, name: str = "", max_chars: int = 2000
 ) -> list[Section]:
@@ -156,28 +189,44 @@ def split_sections(
         path = [part for part in (chapter, section_name, label) if part]
         context = " | ".join(part for part in (context_head, chapter, section_name, label) if part)
         base_key = f"dieu-{make_key(heading.number)}"
-        pieces: list[tuple[int, int, str | None]]
+        pieces: list[tuple[int, int, str | None, str | None]]
         if len(body) <= max_chars:
-            pieces = [(0, len(body), None)]
+            pieces = [(0, len(body), None, None)]
         else:
             clauses = _clause_spans(body)
             if not clauses:
-                pieces = [(0, len(body), None)]
+                pieces = [(0, len(body), None, None)]
             else:
                 pieces = []
                 if clauses[0][0] > 0:
                     clauses[0] = (0, clauses[0][1], clauses[0][2])
                 for c_start, c_end, number in clauses:
-                    pieces.append((c_start, c_end, number))
-        for p_start, p_end, clause in pieces:
+                    points = (
+                        _point_spans(body[c_start:c_end]) if c_end - c_start > max_chars else []
+                    )
+                    if not points:
+                        pieces.append((c_start, c_end, number, None))
+                        continue
+                    pieces.append((c_start, c_start + points[0][0], number, None))
+                    for q_start, q_end, letter in points:
+                        pieces.append((c_start + q_start, c_start + q_end, number, letter))
+        for p_start, p_end, clause, point in pieces:
             raw = body[p_start:p_end]
             left = len(raw) - len(raw.lstrip())
             stripped = raw.strip()
             if not stripped:
                 continue
             start = body_start + p_start + left
-            piece_path = list(path) + ([f"khoản {clause}"] if clause else [])
-            key = base_key + (f"-khoan-{clause}" if clause else "")
+            piece_path = (
+                list(path)
+                + ([f"khoản {clause}"] if clause else [])
+                + ([f"điểm {point}"] if point else [])
+            )
+            key = (
+                base_key
+                + (f"-khoan-{clause}" if clause else "")
+                + (f"-diem-{point}" if point else "")
+            )
             sections.append(
                 Section(
                     f"{context}\n{stripped}" if context else stripped,

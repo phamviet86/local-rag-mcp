@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from local_rag.legal import (
+    detect_doc_name,
     detect_headings,
     find_numbers,
     is_number_query,
@@ -92,3 +93,21 @@ def test_cite_key_uniqueness() -> None:
     first = make_cite_key("1/2026/ND-CP", ["dieu-1"], taken)
     second = make_cite_key("1/2026/ND-CP", ["dieu-1"], taken)
     assert (first, second) == ("1/2026/ND-CP#dieu-1", "1/2026/ND-CP#dieu-1~2")
+
+
+def test_split_by_point_when_clause_is_long() -> None:
+    clause = "1. Mở đầu.\n" + "\n".join(f"{c}) " + "nội dung " * 60 + "hết." for c in "abc")
+    text = f"Điều 1. Dài\n\n{clause}\n\nĐiều 2. Ngắn\n\nNội dung.\n"
+    keys = [s.key_parts[0] for s in split_sections(text, None, "", max_chars=500)]
+    assert keys[:4] == [
+        "dieu-1-khoan-1",
+        "dieu-1-khoan-1-diem-a",
+        "dieu-1-khoan-1-diem-b",
+        "dieu-1-khoan-1-diem-c",
+    ]
+
+
+def test_detect_doc_name() -> None:
+    head = "NGHỊ ĐỊNH 99/2026/NĐ-CP\nQuy định về tài sản công\n\nChương I\n"
+    assert detect_doc_name(head, "99/2026/NĐ-CP") == "Quy định về tài sản công"
+    assert detect_doc_name("không có số", None) == ""
