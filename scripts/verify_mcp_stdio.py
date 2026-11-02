@@ -126,7 +126,7 @@ def main() -> int:
         client.notify("notifications/initialized", {})
         listed = client.request(2, "tools/list", {})
         names = {tool.get("name") for tool in listed.get("tools", [])}
-        required = {"status", "doctor", "sources", "index_coverage", "get_chunk"}
+        required = {"status", "doctor", "sources", "index_coverage", "get_chunk", "check_status"}
         if missing := required - names:
             raise RuntimeError(f"reader tool list is missing: {sorted(missing)}")
         _call(client, 5, "index_coverage")

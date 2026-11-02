@@ -188,6 +188,17 @@ MIGRATIONS = [
     ALTER TABLE documents ADD COLUMN doc_no_key TEXT;
     CREATE INDEX documents_doc_no_key_idx ON documents(doc_no_key);
     """,
+    """
+    CREATE TABLE document_validity (
+      document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+      effective_from TEXT, effective_to TEXT,
+      amended_by_json TEXT NOT NULL DEFAULT '[]', replaced_by TEXT,
+      status_checked_on TEXT, status_source TEXT,
+      evidence_json TEXT NOT NULL DEFAULT '[]', actor TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX document_validity_from_idx ON document_validity(effective_from);
+    """,
 ]
 
 
@@ -503,6 +514,46 @@ class Database:
             if cursor.lastrowid is None:
                 raise RuntimeError("metadata insert did not return a row id")
             return cursor.lastrowid
+
+    def set_validity(
+        self,
+        path: str,
+        fields: dict[str, Any],
+        evidence: Sequence[dict[str, Any]],
+        actor: str,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        """Record validity dates for one document (half-open: effective_to is exclusive)."""
+        from .validity import normalize_validity
+
+        self._validate_evidence(evidence)
+        values = normalize_validity(fields)
+        document = self.resolve_document(path, source)
+        with self.transaction() as connection:
+            connection.execute(
+                """INSERT INTO document_validity
+                   (document_id,effective_from,effective_to,amended_by_json,replaced_by,
+                    status_checked_on,status_source,evidence_json,actor)
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(document_id) DO UPDATE SET
+                     effective_from=excluded.effective_from, effective_to=excluded.effective_to,
+                     amended_by_json=excluded.amended_by_json, replaced_by=excluded.replaced_by,
+                     status_checked_on=excluded.status_checked_on,
+                     status_source=excluded.status_source, evidence_json=excluded.evidence_json,
+                     actor=excluded.actor, updated_at=CURRENT_TIMESTAMP""",
+                (
+                    document["id"],
+                    values["effective_from"],
+                    values["effective_to"],
+                    json.dumps(values["amended_by"], ensure_ascii=False),
+                    values["replaced_by"],
+                    values["status_checked_on"],
+                    values["status_source"],
+                    json.dumps(list(evidence)),
+                    actor,
+                ),
+            )
+        return {"stable_ref": stable_ref(document), **values}
 
     def metadata(self, path: str) -> dict[str, Any]:
         document = self.resolve_document(path)

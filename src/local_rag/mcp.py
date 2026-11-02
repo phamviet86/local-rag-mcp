@@ -48,6 +48,8 @@ READER_TOOLS = [
                 "mode": {"type": "string", "enum": list(SEARCH_MODES)},
                 "match": {"type": "string", "enum": list(MATCH_MODES), "default": "any"},
                 "doc_no": {"type": "string"},
+                "doc_type": {"type": "string", "description": "document code such as NĐ-CP, TT"},
+                "valid_on": {"type": "string", "description": "YYYY-MM-DD; only documents valid"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                 "per_document": {"type": "integer", "minimum": 1, "maximum": 100, "default": 3},
             },
@@ -98,6 +100,21 @@ READER_TOOLS = [
                 "neighbors": {"type": "integer", "minimum": 0, "maximum": 3, "default": 0},
                 "source": {"type": "string"},
             }
+        ),
+    },
+    {
+        "name": "check_status",
+        "description": (
+            "Read-only validity check for one document on a date: status, CITES_EXPIRED, "
+            "duplicate and integrity warnings. Unknown validity is never treated as valid."
+        ),
+        "inputSchema": _schema(
+            {
+                "path": {"type": "string"},
+                "on": {"type": "string", "description": "YYYY-MM-DD"},
+                "source": {"type": "string"},
+            },
+            ["path", "on"],
         ),
     },
     {
@@ -174,6 +191,23 @@ REVIEWER_TOOLS = [
                 "actor": {"type": "string"},
             },
             ["path", "key", "value", "evidence", "actor"],
+        ),
+    },
+    {
+        "name": "set_validity",
+        "description": (
+            "Record evidence-backed validity dates (effective_to exclusive), amended_by, "
+            "replaced_by, status_checked_on and status_source for a document."
+        ),
+        "inputSchema": _schema(
+            {
+                "path": {"type": "string"},
+                "source": {"type": "string"},
+                "fields": {"type": "object"},
+                "evidence": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+                "actor": {"type": "string"},
+            },
+            ["path", "fields", "evidence", "actor"],
         ),
     },
     {
@@ -320,6 +354,8 @@ class MCPServer:
                     values.get("modified_before"),
                     values.get("match", "any"),
                     values.get("doc_no"),
+                    values.get("doc_type"),
+                    values.get("valid_on"),
                 )
             return self.service.search(
                 values["query"],
@@ -332,6 +368,19 @@ class MCPServer:
                 values.get("modified_before"),
                 values.get("match", "any"),
                 values.get("doc_no"),
+                values.get("doc_type"),
+                values.get("valid_on"),
+            )
+        if name == "check_status":
+            if multi:
+                return self.service.check_status(values["path"], values["on"], values.get("source"))
+            return self.service.check_status(values["path"], values["on"])
+        if name == "set_validity":
+            validity_args = (values["path"], values["fields"], values["evidence"], values["actor"])
+            return (
+                self.service.set_validity(*validity_args, values.get("source"))
+                if multi
+                else self.service.set_validity(*validity_args)
             )
         if name == "get_chunk":
             if multi:
@@ -590,10 +639,14 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         modified_before: str | None = None,
         match: str = "any",
         doc_no: str | None = None,
+        doc_type: str | None = None,
+        valid_on: str | None = None,
     ) -> dict[str, Any]:
         """Search globally or filter by source and relative folder.
 
-        match is any (default), all, or phrase; doc_no ranks that legal document first.
+        match is any (default), all, phrase or auto; doc_no ranks that legal document first;
+        doc_type filters by document code (NĐ-CP, TT); valid_on keeps only documents with a
+        recorded validity covering that YYYY-MM-DD date.
         """
         return _dict_result(
             dispatcher.call(
@@ -610,6 +663,8 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                     "modified_before": modified_before,
                     "match": match,
                     "doc_no": doc_no,
+                    "doc_type": doc_type,
+                    "valid_on": valid_on,
                 },
             )
         )
@@ -634,6 +689,13 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                     "source": source,
                 },
             )
+        )
+
+    @server.tool(annotations=read_only)
+    def check_status(path: str, on: str, source: str | None = None) -> dict[str, Any]:
+        """Check a document's validity on a date, plus duplicate and integrity warnings."""
+        return _dict_result(
+            dispatcher.call("check_status", {"path": path, "on": on, "source": source})
         )
 
     @server.tool(annotations=read_only)
@@ -738,6 +800,28 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             return _dict_result(
                 dispatcher.call(
                     "resolve_review", {"review_id": review_id, "resolution": resolution}
+                )
+            )
+
+        @server.tool(annotations=mutate)
+        def set_validity(
+            path: str,
+            fields: dict[str, Any],
+            evidence: list[dict[str, Any]],
+            actor: str,
+            source: str | None = None,
+        ) -> dict[str, Any]:
+            """Record evidence-backed validity dates for a document (effective_to exclusive)."""
+            return _dict_result(
+                dispatcher.call(
+                    "set_validity",
+                    {
+                        "path": path,
+                        "source": source,
+                        "fields": fields,
+                        "evidence": evidence,
+                        "actor": actor,
+                    },
                 )
             )
 

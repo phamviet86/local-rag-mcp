@@ -26,6 +26,8 @@ or repair when in scope. A skill describes a tool workflow; it does not itself e
    with `get_chunk` (`neighbors` 1-3). When `ocr` is true, say "OCR, chưa kiểm chứng" and ask the
    user to open the original page before quoting. A document number or `doc_no` ranks that document
    first; `match` may be `any` (default), `all` or `phrase`.
+7. Before relying on a legal document, call `check_status` for the relevant date and disclose
+   `unknown`/expired status and its warnings; never treat unknown validity as valid.
 
 `hybrid` may fall back to full text when embeddings are unavailable; report that limitation without
 claiming the entire index is unusable. Missing OCR affects OCR-routed PDF pages while native text and

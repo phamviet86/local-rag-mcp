@@ -174,3 +174,71 @@ def test_window_strategy_keeps_legacy_chunks(tmp_path: Path) -> None:
     with rag.db.connect() as connection:
         found = [r[0] for r in connection.execute("SELECT cite_key FROM chunks")]
     assert found and all(key.endswith(f"#c{i}") for i, key in enumerate(found))
+
+
+EVIDENCE = [{"path": "law:nghi-dinh.txt", "locator": "line:1"}]
+
+
+def test_validity_filters_status_and_cites_expired(service: MultiSourceRAG, tmp_path: Path) -> None:
+    ref = "law:nghi-dinh.txt"
+    unknown = service.check_status(ref, "2026-06-01")
+    assert unknown["status"] == "unknown"
+    assert any(w.startswith("UNKNOWN_VALIDITY") for w in unknown["warnings"])
+    assert service.search("tài sản", mode="full_text", valid_on="2026-06-01")["results"] == []
+
+    service.set_validity(
+        ref,
+        {"effective_from": "2026-01-01", "effective_to": "2027-01-01", "status_source": "test"},
+        EVIDENCE,
+        "tester",
+    )
+    assert service.check_status(ref, "2026-12-31")["status"] == "valid"
+    assert service.check_status(ref, "2027-01-01")["status"] == "expired"  # half-open end
+    assert service.check_status(ref, "2025-12-31")["status"] == "not_yet_effective"
+    assert service.search("tài sản", mode="full_text", valid_on="2026-06-01")["results"]
+    assert service.search("tài sản", mode="full_text", valid_on="2027-06-01")["results"] == []
+    assert service.search("tài sản", mode="full_text", doc_type="NĐ-CP")["results"]
+    assert service.search("tài sản", mode="full_text", doc_type="TT")["results"] == []
+    with pytest.raises(ValueError, match="valid_on"):
+        service.search("tài sản", valid_on="01/06/2026")
+    with pytest.raises(ValueError, match="exclusive"):
+        service.set_validity(
+            ref, {"effective_from": "2026-05-01", "effective_to": "2026-01-01"}, EVIDENCE, "t"
+        )
+
+
+def test_cites_expired_duplicates_and_integrity(service: MultiSourceRAG, tmp_path: Path) -> None:
+    root = tmp_path / "docs"
+    (root / "thong-tu.txt").write_text(
+        "THÔNG TƯ 24/2026/VBHN-TT-BTC\nHướng dẫn\n\nĐiều 1. A\n\nNội dung một.\n\n"
+        "Điều 2. B\n\nNội dung hai.\n",
+        encoding="utf-8",
+    )
+    (root / "ban-sao.txt").write_text((root / "nghi-dinh.txt").read_text("utf-8"), "utf-8")
+    service.reconcile()
+    service.set_validity(
+        "law:thong-tu.txt",
+        {"effective_from": "2026-01-01", "effective_to": "2026-03-01"},
+        [{"path": "law:thong-tu.txt", "locator": "line:1"}],
+        "tester",
+    )
+    report = service.check_status("law:nghi-dinh.txt", "2026-06-01")
+    assert any(w.startswith("CITES_EXPIRED: 24/2026/VBHN-TT-BTC") for w in report["warnings"])
+    assert any(w.startswith("DUPLICATE_SHA256") for w in report["warnings"])
+    assert report["integrity"]["sha256_matches"] is True
+    (root / "nghi-dinh.txt").write_text("đã sửa", encoding="utf-8")
+    changed = service.check_status("law:nghi-dinh.txt", "2026-06-01")
+    assert any(w.startswith("SOURCE_CHANGED") for w in changed["warnings"])
+
+
+def test_auto_match_falls_back_to_any(service: MultiSourceRAG) -> None:
+    result = service.search("mua sắm xyzabc", mode="full_text", match="auto")
+    assert result["effective_match"] == "any" and result["results"]
+    exact = service.search("mua sắm tài sản", mode="full_text", match="auto")
+    assert exact["effective_match"] == "all"
+
+
+def test_reader_profile_cannot_set_validity(service: MultiSourceRAG) -> None:
+    reader = MCPServer(service, "reader")
+    assert "check_status" in reader.allowed and "set_validity" not in reader.allowed
+    assert "set_validity" in MCPServer(service, "reviewer").allowed

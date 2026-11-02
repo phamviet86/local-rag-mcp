@@ -17,6 +17,18 @@ All notable changes to this project are documented in this file. This project fo
   document number looks the document up first.
 - Add read-only MCP tool and CLI `get_chunk` / `chunk <cite_key> --neighbors N`, and
   `eval <file.jsonl> --k --target` reporting recall@1/3/10 with failure groups (exit 1 below target).
+- Split long khoản into điểm chunks (`...-khoan-2-diem-a`) and add the document title to the chunk
+  context line.
+- Migration 9 adds `document_validity` (`effective_from`, exclusive `effective_to`, `amended_by`,
+  `replaced_by`, `status_checked_on`, `status_source`). Unknown validity is never treated as valid.
+  Reviewer `set_validity` / CLI `validity set` record it with evidence; reader `check_status` /
+  CLI `check-status --on DATE` report status, `CITES_EXPIRED`, `DUPLICATE_SHA256`,
+  `DUPLICATE_CONTENT`, `SOURCE_CHANGED` (local file re-hash), OCR and open-review warnings.
+- `search` gains `doc_type` (document code such as NĐ-CP, TT), `valid_on` (YYYY-MM-DD, keeps only
+  documents with recorded validity covering the date) and `match=auto` (AND, then fall back to OR).
+- Document Claude Code and Claude Desktop MCP setup.
+- Known gap: pdf-inspector 1.15.0 exposes no page rendering, so there is no original-page image
+  tool yet (needs a renderer such as pypdfium2 as an optional dependency).
 - Not verified against real data: how pdf-inspector emits "Điều N." lines on real legal PDFs, real
   OCR output, large-corpus performance; document-number and heading patterns are reasoned by hand
   and tested only on synthetic text. Điểm (a, b, c) are not split into separate chunks.

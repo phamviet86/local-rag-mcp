@@ -154,3 +154,7 @@ before answering. If `ocr` is true, state "OCR, chưa kiểm chứng" and ask th
 page before relying on a quoted figure. Rows without `cite_key` predate the upgrade and need an
 operator `reindex --reextract`. Use `search --doc-no` / a document-number query to anchor a document,
 and `eval` to measure retrieval quality against a question set.
+
+Before relying on a legal document call `check_status(path, on=<date>)`: treat `unknown`,
+`expired`, `not_yet_effective`, `CITES_EXPIRED`, `SOURCE_CHANGED` and `OCR_UNVERIFIED` as reasons to
+tell the user, not to cite silently. Validity is recorded only by reviewers with evidence.

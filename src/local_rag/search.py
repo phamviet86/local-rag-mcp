@@ -16,7 +16,7 @@ from .embeddings import EmbeddingProvider, cache_identity
 from .legal import is_number_query, make_key
 
 SEARCH_MODES = ("full_text", "semantic", "hybrid")
-MATCH_MODES = ("any", "all", "phrase")
+MATCH_MODES = ("any", "all", "phrase", "auto")
 
 
 class SemanticSearchUnavailable(RuntimeError):
@@ -54,9 +54,12 @@ class SearchEngine:
         modified_before: str | None = None,
         match: str = "any",
         doc_no: str | None = None,
+        doc_type: str | None = None,
+        valid_on: str | None = None,
     ) -> dict[str, Any]:
         if match not in MATCH_MODES:
             raise ValueError(f"match must be one of: {', '.join(MATCH_MODES)}")
+        requested_match = match
         if mode not in SEARCH_MODES:
             raise ValueError(f"mode must be one of: {', '.join(SEARCH_MODES)}")
         if not 1 <= per_document <= 100:
@@ -67,14 +70,21 @@ class SearchEngine:
         if not terms:
             raise ValueError("query must contain searchable terms")
         relative_scope = self._relative_scope(scope)
-        filters = (media_type, modified_after, modified_before)
+        filters = (media_type, modified_after, modified_before, doc_type, valid_on)
         _filter_sql(relative_scope, source, *filters)  # Validate even for an empty index.
         warnings: list[str] = []
         lexical = (
-            self._full_text(terms, relative_scope, source, limit, filters, match)
+            self._full_text(
+                terms, relative_scope, source, limit, filters, "all" if match == "auto" else match
+            )
             if mode != "semantic"
             else {}
         )
+        if requested_match == "auto":
+            match = "all"
+            if mode != "semantic" and not lexical:
+                match = "any"
+                lexical = self._full_text(terms, relative_scope, source, limit, filters, "any")
         semantic: dict[int, tuple[int, float, Any]] = {}
         if mode != "full_text":
             try:
@@ -93,7 +103,8 @@ class SearchEngine:
         results = self._diversify(results, per_document, limit, relative_scope, source, filters)
         return {
             "mode": mode,
-            "match": match,
+            "match": requested_match,
+            "effective_match": match,
             "effective_mode": effective_mode,
             "scope": relative_scope,
             "source": source,
@@ -107,7 +118,7 @@ class SearchEngine:
         scope: str | None,
         source: str | None,
         limit: int,
-        filters: tuple[str | None, str | None, str | None] = (None, None, None),
+        filters: tuple[str | None, ...] = (None, None, None, None, None),
         match: str = "any",
     ) -> dict[tuple[str, int], dict[str, Any]]:
         quoted = [f'"{fts_fold(term)}"' for term in terms]
@@ -174,7 +185,7 @@ class SearchEngine:
         doc_no: str | None,
         scope: str | None,
         source: str | None,
-        filters: tuple[str | None, str | None, str | None],
+        filters: tuple[str | None, ...],
         limit: int,
     ) -> list[dict[str, Any]]:
         number_query = doc_no is None and is_number_query(query)
@@ -212,7 +223,7 @@ class SearchEngine:
         scope: str | None,
         source: str | None,
         limit: int,
-        filters: tuple[str | None, str | None, str | None] = (None, None, None),
+        filters: tuple[str | None, ...] = (None, None, None, None, None),
     ) -> dict[int, tuple[int, float, Any]]:
         if self.embeddings is None:
             raise RuntimeError("no embedding provider is configured")
@@ -366,7 +377,7 @@ class SearchEngine:
         limit: int,
         scope: str | None,
         source: str | None,
-        filters: tuple[str | None, str | None, str | None],
+        filters: tuple[str | None, ...],
     ) -> list[dict[str, Any]]:
         counts: Counter[str] = Counter()
         seen: set[str] = set()
@@ -631,9 +642,23 @@ def _filter_sql(
     media_type: str | None = None,
     modified_after: str | None = None,
     modified_before: str | None = None,
+    doc_type: str | None = None,
+    valid_on: str | None = None,
 ) -> tuple[str, list[str]]:
     clauses: list[str] = []
     values: list[str] = []
+    if doc_type:
+        clauses.append("AND ('-' || d.doc_no_key || '-') LIKE ?")
+        values.append(f"%-{make_key(doc_type)}-%")
+    if valid_on:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", valid_on):
+            raise ValueError("valid_on must be YYYY-MM-DD")
+        clauses.append(
+            "AND EXISTS (SELECT 1 FROM document_validity v WHERE v.document_id=d.id "
+            "AND v.effective_from IS NOT NULL AND v.effective_from<=? "
+            "AND (v.effective_to IS NULL OR v.effective_to>?))"
+        )
+        values.extend((valid_on, valid_on))
     if media_type is not None:
         clauses.append("AND d.media_type=?")
         values.append(media_type)

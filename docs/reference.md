@@ -136,6 +136,12 @@ original page before quoting. Rows indexed before this change have no `cite_key`
 `eval` reads JSONL lines `{id, question, gold:[cite_key], type, diacritics}`; a gold Điều also accepts
 its khoản chunks.
 
+Validity and filters: `search --doc-type NĐ-CP`, `search --valid-on 2026-06-01` (only documents
+with recorded validity covering the date), `search --match auto` (AND, then OR when empty).
+Record validity with `validity set REF '{"effective_from":"2026-01-01","effective_to":"2027-01-01"}'
+EVIDENCE_JSON --actor NAME` (reviewer capability; `effective_to` is exclusive) and check it with
+`check-status REF --on 2026-06-01` (reader). Missing dates mean `unknown`, never valid.
+
 Modes are `full_text`, `semantic`, and `hybrid` (default). FTS5/BM25 remains local. Hybrid uses
 reciprocal-rank fusion of the ordered BM25 and semantic result lists. If query embeddings fail,
 hybrid returns FTS results with a warning; semantic-only fails clearly.
@@ -215,7 +221,7 @@ LOCAL_RAG_MCP_PROFILE=reviewer local-rag-mcp-server
 LOCAL_RAG_MCP_PROFILE=admin local-rag-mcp-server
 ```
 
-- `reader`: `search`, `read`, `get_chunk`, `status`, `doctor`, `index_status`, `job_status`, `sources`,
+- `reader`: `search`, `read`, `get_chunk`, `check_status`, `status`, `doctor`, `index_status`, `job_status`, `sources`,
   `metadata`, and `reviews`.
 - `reviewer`: reader tools plus page correction/review resolution and evidence-backed metadata and
   relationships.

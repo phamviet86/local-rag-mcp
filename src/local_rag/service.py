@@ -89,6 +89,8 @@ class LocalRAG:
         modified_before: str | None = None,
         match: str = "any",
         doc_no: str | None = None,
+        doc_type: str | None = None,
+        valid_on: str | None = None,
     ) -> dict[str, Any]:
         return self.search_engine.search(
             query,
@@ -102,6 +104,8 @@ class LocalRAG:
             modified_before,
             match,
             doc_no,
+            doc_type,
+            valid_on,
         )
 
     def get_chunk(
@@ -155,6 +159,16 @@ class LocalRAG:
 
     def metadata(self, path: str) -> dict[str, Any]:
         return self.db.metadata(path)
+
+    def check_status(self, path: str, on: str) -> dict[str, Any]:
+        from .validity import check_status
+
+        return check_status(self.db, path, on, self.indexer.source_id)
+
+    def set_validity(
+        self, path: str, fields: dict[str, Any], evidence: list[dict[str, Any]], actor: str
+    ) -> dict[str, Any]:
+        return self.db.set_validity(path, fields, evidence, actor, self.indexer.source_id)
 
     def add_metadata(
         self, path: str, key: str, value: Any, evidence: list[dict[str, Any]], actor: str
@@ -451,6 +465,8 @@ class MultiSourceRAG:
         modified_before: str | None = None,
         match: str = "any",
         doc_no: str | None = None,
+        doc_type: str | None = None,
+        valid_on: str | None = None,
     ) -> dict[str, Any]:
         if not self.registry.list(enabled=True):
             return {
@@ -479,6 +495,8 @@ class MultiSourceRAG:
             modified_before,
             match,
             doc_no,
+            doc_type,
+            valid_on,
         )
         result["index_status"] = self.index_status()
         result["coverage"] = self.index_coverage(source, folder)
@@ -767,6 +785,21 @@ class MultiSourceRAG:
     def metadata(self, path: str, source: str | None = None) -> dict[str, Any]:
         document = self.db.resolve_document(path, source)
         return self.db.metadata(str(document["path"]))
+
+    def check_status(self, path: str, on: str, source: str | None = None) -> dict[str, Any]:
+        from .validity import check_status
+
+        return check_status(self.db, path, on, source)
+
+    def set_validity(
+        self,
+        path: str,
+        fields: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        actor: str,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        return self.db.set_validity(path, fields, evidence, actor, source)
 
     def add_metadata(
         self,

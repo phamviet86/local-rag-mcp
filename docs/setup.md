@@ -166,6 +166,27 @@ Restart/reconnect Codex, then verify a real initialize, tool list, `doctor`, `so
 call. The expected empty-install response is `no_enabled_sources`, not a server failure. The JSON
 template is [../config/mcp.json.example](../config/mcp.json.example).
 
+## Connect Claude Code and Claude Desktop
+
+Use the same absolute executable and data root, with the `reader` profile.
+
+Claude Code (user scope keeps it out of repositories):
+
+```bash
+claude mcp add local-rag-mcp --scope user \
+  --env LOCAL_RAG_MCP_HOME="$DATA_ROOT" \
+  --env LOCAL_RAG_MCP_PROFILE=reader \
+  -- "$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp-server"
+claude mcp get local-rag-mcp
+```
+
+Claude Desktop: add the `mcpServers` entry from
+[../config/mcp.json.example](../config/mcp.json.example) (absolute `command`, `LOCAL_RAG_MCP_HOME`,
+`LOCAL_RAG_MCP_PROFILE=reader`) to `claude_desktop_config.json` (macOS:
+`~/Library/Application Support/Claude/claude_desktop_config.json`), then fully quit and reopen the
+app. Confirm `get_chunk`, `check_status`, `search`, `read` and `status` are listed; the first
+`status` call on an empty install reports `no_enabled_sources`, which is expected.
+
 `reader` is the safe default. `reviewer` can resolve OCR reviews and add evidence-backed metadata;
 `admin` can start indexing and change source lifecycle. Profiles do not authenticate callers—only
 trusted local processes should get write-capable profiles.

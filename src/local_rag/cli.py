@@ -116,6 +116,20 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     search.add_argument("--mode", choices=SEARCH_MODES, default="hybrid")
     search.add_argument("--match", choices=MATCH_MODES, default="any")
     search.add_argument("--doc-no", help="legal document number to rank first")
+    search.add_argument("--doc-type", help="document code filter, e.g. NĐ-CP or TT")
+    search.add_argument("--valid-on", help="YYYY-MM-DD; keep documents with recorded validity")
+    check = commands.add_parser("check-status", help="validity, duplicates and integrity check")
+    check.add_argument("path")
+    check.add_argument("--on", required=True, help="YYYY-MM-DD")
+    check.add_argument("--source")
+    validity = commands.add_parser("validity", help="record evidence-backed document validity")
+    validity_commands = validity.add_subparsers(dest="validity_command", required=True)
+    validity_set = validity_commands.add_parser("set")
+    validity_set.add_argument("path")
+    validity_set.add_argument("fields_json", help='e.g. {"effective_from":"2026-01-01"}')
+    validity_set.add_argument("evidence_json")
+    validity_set.add_argument("--source")
+    validity_set.add_argument("--actor", default="cli")
     chunk = commands.add_parser("chunk", help="read one chunk by cite_key with neighbours")
     chunk.add_argument("cite_key")
     chunk.add_argument("--source")
@@ -340,6 +354,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.modified_before,
             args.match,
             args.doc_no,
+            args.doc_type,
+            args.valid_on,
+        )
+    elif command == "check-status":
+        output = service.check_status(args.path, args.on, args.source)
+    elif command == "validity":
+        output = service.set_validity(
+            args.path,
+            _json(args.fields_json, "fields_json"),
+            _evidence(args.evidence_json),
+            args.actor,
+            args.source,
         )
     elif command == "chunk":
         output = service.get_chunk(args.cite_key, None, None, args.neighbors, args.source)
