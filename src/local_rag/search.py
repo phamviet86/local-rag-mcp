@@ -52,7 +52,7 @@ class SearchEngine:
         media_type: str | None = None,
         modified_after: str | None = None,
         modified_before: str | None = None,
-        match: str = "any",
+        match: str = "auto",
         doc_no: str | None = None,
         doc_type: str | None = None,
         valid_on: str | None = None,
@@ -124,7 +124,7 @@ class SearchEngine:
         source: str | None,
         limit: int,
         filters: tuple[str | None, ...] = (None, None, None, None, None),
-        match: str = "any",
+        match: str = "auto",
     ) -> dict[tuple[str, int], dict[str, Any]]:
         quoted = [f'"{fts_fold(term)}"' for term in terms]
         if match == "phrase":
@@ -391,7 +391,10 @@ class SearchEngine:
                 score = _rrf(lexical_rank, entry.get("semantic_rank"))
             else:
                 score = lexical_score
-            output.append(self._result(entry, score))
+            result = self._result(entry, score)
+            if "#phu-luc" in str(result["cite_key"]):
+                result["score"] = round(result["score"] * 0.85, 6)  # forms rank below articles
+            output.append(result)
         return sorted(output, key=lambda item: item["score"], reverse=True)
 
     def _diversify(

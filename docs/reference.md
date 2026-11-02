@@ -121,7 +121,7 @@ local-rag-mcp read legal-drive:contract.pdf
 Legal-document options (see [design-legal-structure.md](design-legal-structure.md)):
 
 ```bash
-local-rag-mcp search "đối tượng áp dụng" --match phrase      # any (default) | all | phrase
+local-rag-mcp search "đối tượng áp dụng" --match phrase      # auto (default) | any | all | phrase
 local-rag-mcp search "66.13/2026/NQ-CP"                       # a document number is looked up first
 local-rag-mcp search "tài sản công" --doc-no 99/2026/NĐ-CP   # rank that document's chunks first
 local-rag-mcp chunk "99/2026/NĐ-CP#dieu-2" --neighbors 1      # read one chunk and its neighbours

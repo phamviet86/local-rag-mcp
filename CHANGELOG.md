@@ -12,7 +12,7 @@ All notable changes to this project are documented in this file. This project fo
 - Migration 8 adds `chunks.cite_key/section_path/page_start/page_end/ocr` and
   `documents.doc_no/doc_no_key`. Existing rows stay NULL until `reindex --reextract`; because chunk
   text changes, chunk hashes change and embeddings are recomputed.
-- `search` gains `match` (`any` default, `all`, `phrase`) and `doc_no`; results add `cite_key`,
+- `search` gains `match` (`auto` default, `any`, `all`, `phrase`) and `doc_no`; results add `cite_key`,
   `page_start`, `page_end`, `ocr`, `ocr_notice`, `section_path`, `doc_no`. A query that is a
   document number looks the document up first.
 - Add read-only MCP tool and CLI `get_chunk` / `chunk <cite_key> --neighbors N`, and
@@ -37,7 +37,7 @@ All notable changes to this project are documented in this file. This project fo
 - Legal splitter hardening from real PDFs: strips pdf-inspector Markdown (`## Điều 1.`,
   `**Điều 2.**`, inline headings after a sentence), tolerates running page headers and skipped
   article numbers, keeps a `mo-dau` chunk for the preamble, packs oversized pieces into `-ptN`
-  parts, and prefers the document's own `Số:` number over cited numbers. `match=auto` now lists
+  parts, and prefers the document's own `Số:` number over cited numbers. `match=auto` (now the default after a 24-question check on nine real documents: hybrid recall@1/3/10 0.83/0.92/0.96 versus 0.79/0.83/0.96 for `any`) lists
   all-terms matches first and then partial matches.
 - Verified on three real public PDFs from datafiles.chinhphu.vn (Luật Đường bộ 35/2024/QH15, a
   consolidated VBHN of Nghị định 156/2018, Thông tư 39/2025/TT-BNNMT): 86/86, 91/92 and 8/8
@@ -48,6 +48,12 @@ All notable changes to this project are documented in this file. This project fo
   Numbers and amounts survived, but folded search cannot match the lost letters; treat OCR pages as
   unverified and check them with `get_page_image`. OCR pages often arrive without line breaks, so
   they fall back to fixed windows.
+- Second real-data pass (nine current and five 2010–2012 Công báo PDFs, installed wheel,
+  `qwen/qwen3-embedding-8b`, 24 questions): hybrid recall@1/3/10 0.79/0.92/0.96, full-text only
+  0.67/0.79/0.92. Document numbers are read from the `Số:` / `Luật số:` line (spaces around
+  slashes tolerated; a draft with a blank number no longer borrows a cited Nghị định's number).
+  Forms after the last article (`Phụ lục`, `(Kèm theo ...)`) become `phu-luc` chunks instead of
+  being filed under the last Điều, and rank slightly below articles.
 - Still unverified: large-corpus performance, real scanned legal PDFs, and the one article the
   consolidated VBHN text appears to skip.
 

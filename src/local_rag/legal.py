@@ -44,20 +44,47 @@ def is_number_query(text: str) -> bool:
     return NUM_RE.fullmatch(text.strip()) is not None
 
 
+_TYPE_CODES = (
+    ("THÔNG TƯ", ("TT",)),
+    ("NGHỊ ĐỊNH", ("NĐ",)),
+    ("NGHỊ QUYẾT", ("NQ", "QH")),
+    ("QUYẾT ĐỊNH", ("QĐ",)),
+    ("PHÁP LỆNH", ("PL", "UBTVQH")),
+    ("LUẬT", ("QH",)),
+)
+
+
+def _document_type_codes(plain: str) -> tuple[str, ...]:
+    """Number-code fragments expected for the document type named near the top, if any."""
+    head = plain[:1500].replace("Ƣ", "Ư").replace("ƣ", "ư").upper()
+    found = [(head.find(kind), codes) for kind, codes in _TYPE_CODES if kind in head]
+    return min(found)[1] if found else ()
+
+
 def find_own_number(text: str) -> str | None:
-    """The document's own number: prefer ``Số: N`` / ``Luật số: N`` over cited references."""
+    """The document's own number, preferring ``Số: N`` / ``Luật số: N`` over cited references.
+
+    A consolidated or draft text without its own number falls back to the first cited number
+    whose code fits the document type (a Thông tư citing a Nghị định does not take its number).
+    """
     plain, _ = normalize_markup(text)
+    plain = re.sub(r"(?<=\d)[ \t]+/", "/", plain)
+    plain = re.sub(r"/[ \t]+(?=[A-ZĐ\d])", "/", plain)
     for match in NUM_RE.finditer(plain):
         line_start = plain.rfind("\n", 0, match.start()) + 1
         if _OWN_NUMBER_LINE.match(plain[line_start : match.start()]):
             return match.group(0)
-    # The number may share a line with the issuing body: "Độc lập-Tự do-Hạnh phúc Số: 39/…".
     for match in NUM_RE.finditer(plain):
         before = plain[max(0, match.start() - 60) : match.start()]
-        if re.search(r"[Ss]ố\s*:?\s*$", before) and not _REFERENCE_BEFORE.search(before.rstrip()):
+        if re.search(r"[Ss]ố\s*:\s*$", before):  # "Luật số: 61/..." is the document's own
             return match.group(0)
-    numbers = find_numbers(plain)
-    return numbers[0] if numbers else None
+        if re.search(r"[Ss]ố\s*$", before) and not _REFERENCE_BEFORE.search(before.rstrip()):
+            return match.group(0)
+    codes = _document_type_codes(plain)
+    for number in find_numbers(plain):
+        if not codes or any(code in number.upper() for code in codes):
+            return number
+    return None
 
 
 # --- Markdown noise removal -------------------------------------------------------------------
@@ -120,6 +147,9 @@ class Heading:
 _CHAPTER = re.compile(r"^(?:Chương|CHƯƠNG)\s+([IVXLC\d]+)\b[.:]?\s*(.*)$")
 _SECTION = re.compile(r"^(?:Mục|MỤC)\s+(\d+[A-Za-z]?)\b[.:]?\s*(.*)$")
 _ARTICLE = re.compile(r"^(?:Điều|ĐIỀU)\s+(\d+)([a-zđ]?)\s*[.:]\s*(.*)$")
+_APPENDIX = re.compile(
+    r"^[|\s]*(?:\(Kèm theo\b|(?:Phụ lục|PHỤ LỤC)\b(?!.*\b(?:này|ban hành|kèm theo)\b))"
+)
 _CLAUSE = re.compile(r"^(\d{1,2})\.\s+(.*)$")
 _POINT = re.compile(r"^([a-zđ])\)\s+(.*)$")
 _SENTENCE_END = (".", ";", ":", "!", "?", '"', "”")
@@ -130,6 +160,7 @@ def detect_headings(text: str) -> list[Heading]:
     headings: list[Heading] = []
     last_article = 0
     previous_line = ""
+    appendix_open = False
     lines = text.splitlines(keepends=True)
     position = 0
     for number, raw in enumerate(lines):
@@ -141,7 +172,13 @@ def detect_headings(text: str) -> list[Heading]:
         chapter = _CHAPTER.match(line)
         section = _SECTION.match(line)
         article = _ARTICLE.match(line)
-        if chapter and len(line) < 200:
+        if headings and len(line) <= 200 and _APPENDIX.match(line) and not appendix_open:
+            # Forms after the last article ("Phụ lục", "(Kèm theo ...)") are not part of it.
+            appendix_open = True
+            headings.append(Heading("phuluc", "", line.strip("| ")[:120], start, end))
+        elif appendix_open:
+            pass  # numbering inside forms never starts a new article
+        elif chapter and len(line) < 200:
             headings.append(Heading("chuong", chapter[1], chapter[2].strip(), start, end))
         elif section and len(line) < 200:
             headings.append(Heading("muc", section[1], section[2].strip(), start, end))
@@ -307,6 +344,18 @@ def split_sections(
     chapter = ""
     section_name = ""
     for index, heading in enumerate(headings):
+        if heading.level == "phuluc":
+            body = plain[heading.start :]
+            emit_packed(
+                body,
+                heading.start,
+                0,
+                len(body),
+                " | ".join(part for part in (context_head, "Phụ lục") if part),
+                ["Phụ lục"],
+                "phu-luc",
+            )
+            break
         if heading.level == "chuong":
             chapter = f"Chương {heading.number}" + (f". {heading.title}" if heading.title else "")
             section_name = ""

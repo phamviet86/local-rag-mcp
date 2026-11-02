@@ -142,3 +142,35 @@ def test_own_number_prefers_so_line_over_references() -> None:
     )
     assert find_own_number(head) == "24/VBHN-BNNPTNT"
     assert find_own_number("Độc lập-Tự do Số: 39/2025/TT-BNNMT Hà Nội") == "39/2025/TT-BNNMT"
+
+
+def test_own_number_real_layouts() -> None:
+    from local_rag.legal import find_own_number
+
+    assert find_own_number("Độc lập Số: 36 /2025/TT-BNNMT *Hà Nội*") == "36/2025/TT-BNNMT"
+    assert find_own_number("Hạnh phúc** Luật số: 61/2010/QH12\n\n## LUẬT") == "61/2010/QH12"
+    assert (
+        find_own_number(
+            "Nghị quyết số: 57/2010/QH12\n\n## NGHỊ QUYẾT\n\nCăn cứ Luật số 24/2000/QH10"
+        )
+        == "57/2010/QH12"
+    )
+    # No own number and the only cited number has the wrong type: do not borrow it.
+    draft = "Số: /2025/TT-BYT\n\n## THÔNG TƯ\n\nQuy định theo Nghị định số 163/2025/NĐ-CP ngày 29"
+    assert find_own_number(draft) is None
+    consolidated = "# THÔNG TƢ Quy định\n\nThông tƣ số 02/2018/TT-BYT ngày 22 tháng 01 năm 2018"
+    assert find_own_number(consolidated) == "02/2018/TT-BYT"
+
+
+def test_appendix_forms_are_not_part_of_last_article() -> None:
+    text = (
+        "Điều 1. Một\n\nNội dung một.\n\nĐiều 2. Hai\n\nNội dung hai.\n\n"
+        "Điều 3. Hiệu lực\n\nCó hiệu lực từ ngày ký.\n\nNơi nhận: Bộ.\n\n"
+        "|(Kèm theo Thông tư số 1/2025/TT-X)|Phụ lục MẪU VĂN BẢN|\n\nMẫu số 01\n\n"
+        "Điều 4.......(Tên cơ quan)\n"
+    )
+    sections = split_sections(text, "1/2025/TT-X", "Tên")
+    keys = [s.key_parts[0] for s in sections]
+    assert keys == ["dieu-1", "dieu-2", "dieu-3", "phu-luc"]
+    assert "Mẫu số 01" not in sections[2].text
+    assert "Mẫu số 01" in sections[3].text

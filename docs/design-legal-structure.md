@@ -39,7 +39,7 @@ stable key (document number, article, clause, page, OCR label), and be able to m
 
 ## Search / surfaces
 
-- `search(match="any"|"all"|"phrase", doc_no=None)`; default `any` keeps current behaviour. A query
+- `search(match="auto"|"any"|"all"|"phrase", doc_no=None)`; default `auto` lists all-terms matches first, then partial matches. A query
   that is a document number, or `doc_no`, looks up `documents.doc_no_key` first and ranks that
   document's chunks first.
 - Results add `cite_key`, `page_start`, `page_end`, `ocr`, `section_path`, `doc_no`.
