@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .db import Database
+from .db import Database, stable_ref
 from .embeddings import (
     EmbeddingProvider,
     cache_identity,
@@ -29,6 +29,41 @@ def _readiness_error(code: str, message: str, *commands: str) -> dict[str, Any]:
         "code": code,
         "message": message,
         "actions": [{"command": command} for command in commands],
+    }
+
+
+def render_document_page(
+    db: Any, runtime: Any, path: str, page: int, dpi: int, source: str | None
+) -> dict[str, Any]:
+    """Render one page of an indexed local PDF so a citation can be checked against the original."""
+    import base64
+    import hashlib
+
+    from .pageimage import render_page_png
+
+    document = db.resolve_document(path, source)
+    if document["media_type"] != "application/pdf":
+        raise ValueError("page images are available for PDF documents only")
+    if document["source_kind"] != "local":
+        raise ValueError("page images need a local source file; Drive files are not cached")
+    file = Path(document["path"])
+    if not file.is_file():
+        raise FileNotFoundError("source file is missing; the indexed text cannot be checked")
+    try:
+        library = runtime.paths().pdfium
+    except FileNotFoundError:
+        raise RuntimeError("PDFium runtime missing; run: local-rag-mcp setup --full") from None
+    png, width, height = render_page_png(file, page, library, dpi)
+    digest = hashlib.sha256(file.read_bytes()).hexdigest()
+    return {
+        "stable_ref": stable_ref(document),
+        "page": page,
+        "dpi": dpi,
+        "width": width,
+        "height": height,
+        "mime_type": "image/png",
+        "source_hash_matches_index": digest == document["content_hash"],
+        "image_base64": base64.b64encode(png).decode("ascii"),
     }
 
 
@@ -159,6 +194,11 @@ class LocalRAG:
 
     def metadata(self, path: str) -> dict[str, Any]:
         return self.db.metadata(path)
+
+    def page_image(self, path: str, page: int, dpi: int = 80) -> dict[str, Any]:
+        return render_document_page(
+            self.db, self.ocr_runtime, path, page, dpi, self.indexer.source_id
+        )
 
     def check_status(self, path: str, on: str) -> dict[str, Any]:
         from .validity import check_status
@@ -785,6 +825,11 @@ class MultiSourceRAG:
     def metadata(self, path: str, source: str | None = None) -> dict[str, Any]:
         document = self.db.resolve_document(path, source)
         return self.db.metadata(str(document["path"]))
+
+    def page_image(
+        self, path: str, page: int, dpi: int = 80, source: str | None = None
+    ) -> dict[str, Any]:
+        return render_document_page(self.db, self.ocr_runtime, path, page, dpi, source)
 
     def check_status(self, path: str, on: str, source: str | None = None) -> dict[str, Any]:
         from .validity import check_status

@@ -18,7 +18,7 @@ from .extraction_errors import error_fields
 from .legal import (
     Section,
     detect_doc_name,
-    find_numbers,
+    find_own_number,
     make_cite_key,
     make_key,
     split_markdown,
@@ -884,8 +884,7 @@ def detect_doc_no(document: ExtractedDocument) -> str | None:
     """Document number from the first page (or the first 3000 characters when unpaged)."""
     first = next((s for s in document.spans if s.kind == "pdf_page"), None)
     head = document.text[first.start : first.end] if first else document.text[:3000]
-    numbers = find_numbers(head[:3000])
-    return numbers[0] if numbers else None
+    return find_own_number(head[:3000])
 
 
 def _annotate(document: ExtractedDocument, chunk: ChunkRecord) -> ChunkRecord:
@@ -912,12 +911,10 @@ def _chunks_structured(document: ExtractedDocument, max_chars: int) -> list[Chun
     head = document.text[first.start : first.end] if first else document.text[:3000]
     name = detect_doc_name(head[:3000], doc_no)
     sections: list[Section]
-    if document.media_type in {"text/markdown"}:
+    if document.media_type == "text/markdown":
         sections = split_markdown(document.text, doc_no, name)
     else:
         sections = split_sections(document.text, doc_no, name, max_chars)
-        if not sections:
-            sections = split_markdown(document.text, doc_no, name)
     chunks: list[ChunkRecord] = []
     for section in sections:
         provenance = [

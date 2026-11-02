@@ -103,6 +103,22 @@ READER_TOOLS = [
         ),
     },
     {
+        "name": "get_page_image",
+        "description": (
+            "Render one page of an indexed local PDF as a PNG (base64) to compare against the "
+            "extracted text or OCR before quoting. Read-only; needs the PDFium runtime."
+        ),
+        "inputSchema": _schema(
+            {
+                "path": {"type": "string"},
+                "page": {"type": "integer", "minimum": 1},
+                "dpi": {"type": "integer", "minimum": 36, "maximum": 220, "default": 80},
+                "source": {"type": "string"},
+            },
+            ["path", "page"],
+        ),
+    },
+    {
         "name": "check_status",
         "description": (
             "Read-only validity check for one document on a date: status, CITES_EXPIRED, "
@@ -370,6 +386,17 @@ class MCPServer:
                 values.get("doc_no"),
                 values.get("doc_type"),
                 values.get("valid_on"),
+            )
+        if name == "get_page_image":
+            if multi:
+                return self.service.page_image(
+                    values["path"],
+                    int(values["page"]),
+                    int(values.get("dpi", 80)),
+                    values.get("source"),
+                )
+            return self.service.page_image(
+                values["path"], int(values["page"]), int(values.get("dpi", 80))
             )
         if name == "check_status":
             if multi:
@@ -688,6 +715,17 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                     "neighbors": neighbors,
                     "source": source,
                 },
+            )
+        )
+
+    @server.tool(annotations=read_only)
+    def get_page_image(
+        path: str, page: int, dpi: int = 80, source: str | None = None
+    ) -> dict[str, Any]:
+        """Render a PDF page as PNG (base64) to verify a citation against the original."""
+        return _dict_result(
+            dispatcher.call(
+                "get_page_image", {"path": path, "page": page, "dpi": dpi, "source": source}
             )
         )
 

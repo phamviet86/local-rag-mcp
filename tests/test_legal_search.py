@@ -65,7 +65,8 @@ def test_structured_chunks_and_cite_keys(service: MultiSourceRAG) -> None:
     with service.db.connect() as connection:
         rows = connection.execute(
             "SELECT c.cite_key,c.section_path,d.doc_no FROM chunks c "
-            "JOIN documents d ON d.id=c.document_id WHERE d.doc_no IS NOT NULL ORDER BY c.ordinal"
+            "JOIN documents d ON d.id=c.document_id WHERE d.doc_no IS NOT NULL "
+            "AND c.cite_key NOT LIKE '%#mo-dau%' ORDER BY c.ordinal"
         ).fetchall()
     assert [row["cite_key"] for row in rows] == [f"99/2026/NĐ-CP#dieu-{n}" for n in (1, 2, 3, 4)]
     assert "Chương II" in json.loads(rows[2]["section_path"])[0]
@@ -236,9 +237,36 @@ def test_auto_match_falls_back_to_any(service: MultiSourceRAG) -> None:
     assert result["effective_match"] == "any" and result["results"]
     exact = service.search("mua sắm tài sản", mode="full_text", match="auto")
     assert exact["effective_match"] == "all"
+    assert exact["results"][0]["cite_key"].endswith("#dieu-4")
 
 
 def test_reader_profile_cannot_set_validity(service: MultiSourceRAG) -> None:
     reader = MCPServer(service, "reader")
     assert "check_status" in reader.allowed and "set_validity" not in reader.allowed
     assert "set_validity" in MCPServer(service, "reviewer").allowed
+
+
+def test_page_image_errors_without_runtime_and_for_text_files(
+    service: MultiSourceRAG, tmp_path: Path
+) -> None:
+    from tests.helpers import write_text_pdf
+
+    with pytest.raises(ValueError, match="PDF documents only"):
+        service.page_image("law:nghi-dinh.txt", 1)
+    write_text_pdf(tmp_path / "docs" / "native.pdf", "Hello page image")
+    service.reconcile()
+    with pytest.raises(RuntimeError, match="PDFium runtime missing"):
+        service.page_image("law:native.pdf", 1)
+
+
+def test_png_encoder_round_trip() -> None:
+    import struct
+    import zlib
+
+    from local_rag.pageimage import _png
+
+    png = _png(bytes([0, 0, 255, 255]) * 4, 2, 2, 8)  # BGRA red pixels
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    length = struct.unpack(">I", png[33:37])[0]
+    raw = zlib.decompress(png[41 : 41 + length])
+    assert raw[:7] == b"\x00\xff\x00\x00\xff\x00\x00"

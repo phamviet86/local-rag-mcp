@@ -111,3 +111,34 @@ def test_detect_doc_name() -> None:
     head = "NGHỊ ĐỊNH 99/2026/NĐ-CP\nQuy định về tài sản công\n\nChương I\n"
     assert detect_doc_name(head, "99/2026/NĐ-CP") == "Quy định về tài sản công"
     assert detect_doc_name("không có số", None) == ""
+
+
+def test_pdf_markdown_headings_are_normalized() -> None:
+    from local_rag.legal import find_own_number, normalize_markup
+
+    text = (
+        "## <u>CÔNG BÁO/Số 983 + 984/Ngày 25-8-2024</u>\n\nLuật số: 35/2024/QH15\n\n"
+        "## Điều 1. Phạm vi\n\nNội dung một. **Điều 2*.* Giải thích** Nội dung hai.\n\n"
+        "## <u>CÔNG BÁO/Số 983 + 984/Ngày 25-8-2024</u>\n\n## Điều 3. Ba\n\nNội dung ba.\n\n"
+        "**Chương II** **TỔ CHỨC** **Điều 5. Năm** Đoạn năm.\n\n"
+        "**Điều 6. Sáu**\n\nĐoạn sáu.\n"
+    )
+    assert find_own_number(text) == "35/2024/QH15"
+    plain, origin = normalize_markup(text)
+    assert "**" not in plain and "##" not in plain and len(plain) == len(origin)
+    headings = [h.number for h in detect_headings(plain) if h.level == "dieu"]
+    assert headings == ["1", "2", "3", "5", "6"]
+    sections = split_sections(text, "35/2024/QH15", "Luật Đường bộ")
+    keys = [s.key_parts[0] for s in sections]
+    assert keys[0] == "mo-dau" and keys[1:] == ["dieu-1", "dieu-2", "dieu-3", "dieu-5", "dieu-6"]
+    assert text[sections[2].start : sections[2].end].startswith("Điều 2")
+
+
+def test_own_number_prefers_so_line_over_references() -> None:
+    from local_rag.legal import find_own_number
+
+    head = (
+        "Nghị định số 156/2018/NĐ-CP ngày 16 tháng 11 năm 2018 của Chính phủ\n\nSố: 24/VBHN-BNNPTNT"
+    )
+    assert find_own_number(head) == "24/VBHN-BNNPTNT"
+    assert find_own_number("Độc lập-Tự do Số: 39/2025/TT-BNNMT Hà Nội") == "39/2025/TT-BNNMT"

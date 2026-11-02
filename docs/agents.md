@@ -158,3 +158,7 @@ and `eval` to measure retrieval quality against a question set.
 Before relying on a legal document call `check_status(path, on=<date>)`: treat `unknown`,
 `expired`, `not_yet_effective`, `CITES_EXPIRED`, `SOURCE_CHANGED` and `OCR_UNVERIFIED` as reasons to
 tell the user, not to cite silently. Validity is recorded only by reviewers with evidence.
+
+When `ocr` is true, or the quoted figure matters, call `get_page_image(path, page)` and compare the
+rendered page with the chunk text before citing; OCR of Vietnamese can drop vowels while reporting
+high confidence.

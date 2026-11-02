@@ -140,7 +140,8 @@ Validity and filters: `search --doc-type NĐ-CP`, `search --valid-on 2026-06-01`
 with recorded validity covering the date), `search --match auto` (AND, then OR when empty).
 Record validity with `validity set REF '{"effective_from":"2026-01-01","effective_to":"2027-01-01"}'
 EVIDENCE_JSON --actor NAME` (reviewer capability; `effective_to` is exclusive) and check it with
-`check-status REF --on 2026-06-01` (reader). Missing dates mean `unknown`, never valid.
+`check-status REF --on 2026-06-01` (reader). Verify a quote against the original with
+`page-image REF --page N --out page.png` (local PDFs; needs the PDFium runtime from `setup --full`). Missing dates mean `unknown`, never valid.
 
 Modes are `full_text`, `semantic`, and `hybrid` (default). FTS5/BM25 remains local. Hybrid uses
 reciprocal-rank fusion of the ordered BM25 and semantic result lists. If query embeddings fail,
@@ -182,7 +183,7 @@ to the configured endpoint; vectors remain local.
 
 Local and downloaded Drive files share the same content-hash extraction cache. TXT/Markdown, DOCX,
 XLSX, and PPTX provenance records line, paragraph/table cell, sheet/cell, and slide/shape positions.
-PDF inspection/native extraction uses `firecrawl/pdf-inspector==1.15.0`; only routed pages use the
+PDF inspection/native extraction uses `firecrawl/pdf-inspector==1.25.2`; only routed pages use the
 pinned, checksum-verified local PDFium/ONNX/PP-OCRv6 runtime.
 
 Blank, failed, complex, and low-quality pages enter a durable review queue:
@@ -221,7 +222,7 @@ LOCAL_RAG_MCP_PROFILE=reviewer local-rag-mcp-server
 LOCAL_RAG_MCP_PROFILE=admin local-rag-mcp-server
 ```
 
-- `reader`: `search`, `read`, `get_chunk`, `check_status`, `status`, `doctor`, `index_status`, `job_status`, `sources`,
+- `reader`: `search`, `read`, `get_chunk`, `get_page_image`, `check_status`, `status`, `doctor`, `index_status`, `job_status`, `sources`,
   `metadata`, and `reviews`.
 - `reviewer`: reader tools plus page correction/review resolution and evidence-backed metadata and
   relationships.

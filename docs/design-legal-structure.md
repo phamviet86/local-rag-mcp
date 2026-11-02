@@ -47,7 +47,18 @@ stable key (document number, article, clause, page, OCR label), and be able to m
 - `eval <file.jsonl>`: `{id, question, gold:[cite_key], type, diacritics}` → recall@1/3/10, misses,
   suggested failure groups; exit 1 below `--target`.
 
+## Findings from real PDFs (pdf-inspector 1.25.2)
+
+- Headings arrive as Markdown (`## Điều 1. ...`, bold `**Điều 2.** ...` inline after a sentence,
+  `**Chương II** **TITLE** **Điều 3...**` on one line). The splitter normalises this before
+  detection and maps offsets back to the original text.
+- Running page headers sit between articles; consolidated texts skip repealed article numbers; forms in
+  appendices restart numbering. Detection therefore accepts a forward jump of up to 10 and ignores
+  lower numbers.
+- Preamble text becomes a `mo-dau` chunk; pieces over `structure_max_chars` split by khoản, điểm,
+  then paragraphs (`-ptN`).
+- OCR (PP-OCRv6 small): CER about 0.14 on a synthetic Vietnamese scan with dropped vowels.
+
 ## Unverified
 
-How pdf-inspector emits "Điều N." lines on real legal PDFs; real OCR output; large-corpus
-performance; document-number and heading patterns are reasoned by hand, not field-tested.
+Large-corpus performance and scanned real legal PDFs.

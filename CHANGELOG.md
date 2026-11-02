@@ -27,11 +27,29 @@ All notable changes to this project are documented in this file. This project fo
 - `search` gains `doc_type` (document code such as NĐ-CP, TT), `valid_on` (YYYY-MM-DD, keeps only
   documents with recorded validity covering the date) and `match=auto` (AND, then fall back to OR).
 - Document Claude Code and Claude Desktop MCP setup.
-- Known gap: pdf-inspector 1.15.0 exposes no page rendering, so there is no original-page image
-  tool yet (needs a renderer such as pypdfium2 as an optional dependency).
-- Not verified against real data: how pdf-inspector emits "Điều N." lines on real legal PDFs, real
-  OCR output, large-corpus performance; document-number and heading patterns are reasoned by hand
-  and tested only on synthetic text. Điểm (a, b, c) are not split into separate chunks.
+- Raise `pdf-inspector` from 1.15.0 to 1.25.2 (no API changes needed for the calls this project
+  uses; the upstream changelog lists no page-rendering API). Re-run `reindex --reextract` to pick
+  up its extraction fixes.
+- Add reader MCP tool `get_page_image` / CLI `page-image --page N --out FILE`: renders one page of
+  an indexed local PDF to PNG through the PDFium library installed by `setup --full` (ctypes plus
+  zlib, no new Python dependency) so a citation can be checked against the original page. It
+  reports whether the file still matches the indexed hash. Drive files and non-PDFs are refused.
+- Legal splitter hardening from real PDFs: strips pdf-inspector Markdown (`## Điều 1.`,
+  `**Điều 2.**`, inline headings after a sentence), tolerates running page headers and skipped
+  article numbers, keeps a `mo-dau` chunk for the preamble, packs oversized pieces into `-ptN`
+  parts, and prefers the document's own `Số:` number over cited numbers. `match=auto` now lists
+  all-terms matches first and then partial matches.
+- Verified on three real public PDFs from datafiles.chinhphu.vn (Luật Đường bộ 35/2024/QH15, a
+  consolidated VBHN of Nghị định 156/2018, Thông tư 39/2025/TT-BNNMT): 86/86, 91/92 and 8/8
+  Điều found, document numbers read correctly. With `qwen/qwen3-embedding-8b` through OpenRouter
+  on 12 questions, hybrid recall@1/3/10 was 0.92/1.00/1.00 (full-text only 0.58/0.75/1.00).
+- Measured OCR limit: on a synthetic scanned page the PP-OCRv6 small model gave CER 0.14–0.15 and
+  dropped many Vietnamese vowels (`Điều` read as `Điu`) while reporting confidence 0.93–0.99.
+  Numbers and amounts survived, but folded search cannot match the lost letters; treat OCR pages as
+  unverified and check them with `get_page_image`. OCR pages often arrive without line breaks, so
+  they fall back to fixed windows.
+- Still unverified: large-corpus performance, real scanned legal PDFs, and the one article the
+  consolidated VBHN text appears to skip.
 
 ## [0.10.1] - 2026-10-19
 

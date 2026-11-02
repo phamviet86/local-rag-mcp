@@ -118,6 +118,12 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     search.add_argument("--doc-no", help="legal document number to rank first")
     search.add_argument("--doc-type", help="document code filter, e.g. NĐ-CP or TT")
     search.add_argument("--valid-on", help="YYYY-MM-DD; keep documents with recorded validity")
+    page_image = commands.add_parser("page-image", help="render one PDF page to a PNG file")
+    page_image.add_argument("path")
+    page_image.add_argument("--page", type=int, required=True)
+    page_image.add_argument("--dpi", type=int, default=110)
+    page_image.add_argument("--out", type=Path, required=True)
+    page_image.add_argument("--source")
     check = commands.add_parser("check-status", help="validity, duplicates and integrity check")
     check.add_argument("path")
     check.add_argument("--on", required=True, help="YYYY-MM-DD")
@@ -357,6 +363,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.doc_type,
             args.valid_on,
         )
+    elif command == "page-image":
+        import base64
+
+        rendered = service.page_image(args.path, args.page, args.dpi, args.source)
+        args.out.write_bytes(base64.b64decode(rendered.pop("image_base64")))
+        output = {**rendered, "written": str(args.out)}
     elif command == "check-status":
         output = service.check_status(args.path, args.on, args.source)
     elif command == "validity":

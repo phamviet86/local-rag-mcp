@@ -81,10 +81,15 @@ class SearchEngine:
             else {}
         )
         if requested_match == "auto":
+            # Results containing every term first, then partial matches (never fewer hits).
             match = "all"
-            if mode != "semantic" and not lexical:
-                match = "any"
-                lexical = self._full_text(terms, relative_scope, source, limit, filters, "any")
+            if mode != "semantic":
+                partial = self._full_text(terms, relative_scope, source, limit, filters, "any")
+                lexical = self._merge_auto(lexical, partial)
+                if len(lexical) == len(partial) and not any(
+                    entry.get("all_terms") for entry in lexical.values()
+                ):
+                    match = "any"
         semantic: dict[int, tuple[int, float, Any]] = {}
         if mode != "full_text":
             try:
@@ -177,6 +182,25 @@ class SearchEngine:
                 "matched_via": row["kind"],
             }
         return results
+
+    @staticmethod
+    def _merge_auto(
+        complete: dict[tuple[str, int], dict[str, Any]],
+        partial: dict[tuple[str, int], dict[str, Any]],
+    ) -> dict[tuple[str, int], dict[str, Any]]:
+        merged: dict[tuple[str, int], dict[str, Any]] = {}
+        for entry in complete.values():
+            entry["all_terms"] = True
+        ordered = sorted(complete.items(), key=lambda item: item[1]["lexical_rank"])
+        ordered += [
+            (key, value)
+            for key, value in sorted(partial.items(), key=lambda item: item[1]["lexical_rank"])
+            if key not in complete
+        ]
+        for rank, (key, entry) in enumerate(ordered, 1):
+            entry["lexical_rank"] = rank
+            merged[key] = entry
+        return merged
 
     def _prioritize_document_number(
         self,
