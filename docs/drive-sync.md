@@ -3,7 +3,7 @@
 Drive titles are metadata, never local filesystem paths. A document is identified by source ID and
 Drive file ID. Its raw cache remains `cache/sources/<source-id>/raw/<sha256(file-id)>.<type>`; the
 suffix comes from the fixed MIME/export map (Google Docs → `.txt`, Sheets → `.xlsx`, Slides →
-`.pptx`). No Drive file or folder is renamed. Slashes, backslashes, percent signs, dots, NUL, Unicode,
+`.pptx`; HTML, CSV, JSON, EPUB and ODF files keep their own suffix). No Drive file or folder is renamed. Slashes, backslashes, percent signs, dots, NUL, Unicode,
 normalization/case variants and duplicate titles cannot cause raw-cache collisions or traversal.
 
 Automatic metadata retains the full original `title` and `original_name`, `drive_file_id`,

@@ -207,4 +207,5 @@ def source_settings(base: Settings, source: SourceRecord) -> Settings:
         openai_api_key=base.openai_api_key,
         ocr_mode=base.ocr_mode,
         docx_document_order=base.docx_document_order,
+        markitdown_extensions=base.markitdown_extensions,
     )

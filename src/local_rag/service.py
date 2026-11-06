@@ -21,6 +21,7 @@ from .extract import Extractor
 from .indexer import Indexer, remove_unreferenced_artifacts
 from .jobs import IndexJobManager, daemon_alive, daemon_info, iso_z, parse_utc
 from .ocr_runtime import OCRRuntimeManager
+from .rawcache import raw_cache_file
 from .rerank import Reranker, configured_reranker, reranker_status
 from .search import SearchEngine
 from .sources import (
@@ -44,7 +45,13 @@ def _readiness_error(code: str, message: str, *commands: str) -> dict[str, Any]:
 
 
 def render_document_page(
-    db: Any, runtime: Any, path: str, page: int, dpi: int, source: str | None
+    db: Any,
+    runtime: Any,
+    path: str,
+    page: int,
+    dpi: int,
+    source: str | None,
+    cache_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Render one page of an indexed local PDF so a citation can be checked against the original."""
     import base64
@@ -56,8 +63,15 @@ def render_document_page(
     if document["media_type"] != "application/pdf":
         raise ValueError("page images are available for PDF documents only")
     if document["source_kind"] != "local":
-        raise ValueError("page images need a local source file; Drive files are not cached")
-    file = Path(document["path"])
+        cached = raw_cache_file(cache_dir, document) if cache_dir is not None else None
+        if cached is None:
+            raise ValueError(
+                "page_image_unavailable: the Drive file is not in the local raw cache; "
+                "run refresh for this source, then retry"
+            )
+        file = cached
+    else:
+        file = Path(document["path"])
     if not file.is_file():
         raise FileNotFoundError("source file is missing; the indexed text cannot be checked")
     try:
@@ -66,7 +80,13 @@ def render_document_page(
         raise RuntimeError("PDFium runtime missing; run: local-rag-mcp setup --full") from None
     png, width, height = render_page_png(file, page, library, dpi)
     digest = hashlib.sha256(file.read_bytes()).hexdigest()
+    drive_fields = (
+        {"cache_matches_index": digest == document["content_hash"]}
+        if document["source_kind"] != "local"
+        else {}
+    )
     return {
+        **drive_fields,
         "stable_ref": stable_ref(document),
         "page": page,
         "dpi": dpi,
@@ -108,6 +128,7 @@ class LocalRAG:
             ocr_offline=settings.ocr_mode == "full",
             docx_document_order=settings.docx_document_order,
             cache_dir=settings.cache_dir,
+            markitdown_extensions=settings.markitdown_extensions,
         )
         self.indexer = Indexer(
             settings,
@@ -220,13 +241,21 @@ class LocalRAG:
 
     def page_image(self, path: str, page: int, dpi: int = 80) -> dict[str, Any]:
         return render_document_page(
-            self.db, self.ocr_runtime, path, page, dpi, self.indexer.source_id
+            self.db,
+            self.ocr_runtime,
+            path,
+            page,
+            dpi,
+            self.indexer.source_id,
+            self.settings.cache_dir,
         )
 
     def check_status(self, path: str, on: str) -> dict[str, Any]:
         from .validity import check_status
 
-        return check_status(self.db, path, on, self.indexer.source_id)
+        return check_status(
+            self.db, path, on, self.indexer.source_id, cache_dir=self.settings.cache_dir
+        )
 
     def set_validity(
         self, path: str, fields: dict[str, Any], evidence: list[dict[str, Any]], actor: str
@@ -277,6 +306,7 @@ class MultiSourceRAG:
             ocr_offline=settings.ocr_mode == "full",
             docx_document_order=settings.docx_document_order,
             cache_dir=settings.cache_dir,
+            markitdown_extensions=settings.markitdown_extensions,
         )
         self.reranker = configured_reranker(settings) if reranker is None else reranker
         self.search_engine = SearchEngine(
@@ -889,7 +919,8 @@ class MultiSourceRAG:
 
         with self.db.connect() as connection:
             review_rows = connection.execute(
-                "SELECT reason,count(*) count FROM reviews WHERE status='open' GROUP BY reason"
+                """SELECT reason,count(*) count FROM reviews
+                   WHERE status='open' AND reason<>'complex_layout' GROUP BY reason"""
             ).fetchall()
             sync_rows = connection.execute(
                 """SELECT name,kind,last_sync_at,last_error FROM sources
@@ -1008,12 +1039,14 @@ class MultiSourceRAG:
     def page_image(
         self, path: str, page: int, dpi: int = 80, source: str | None = None
     ) -> dict[str, Any]:
-        return render_document_page(self.db, self.ocr_runtime, path, page, dpi, source)
+        return render_document_page(
+            self.db, self.ocr_runtime, path, page, dpi, source, self.settings.cache_dir
+        )
 
     def check_status(self, path: str, on: str, source: str | None = None) -> dict[str, Any]:
         from .validity import check_status
 
-        return check_status(self.db, path, on, source)
+        return check_status(self.db, path, on, source, cache_dir=self.settings.cache_dir)
 
     def set_validity(
         self,

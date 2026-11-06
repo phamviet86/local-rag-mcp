@@ -6,8 +6,10 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
+from . import formats
+from .builder import Builder as _Builder
 from .extraction_errors import ExtractionError
-from .models import ExtractedDocument, SourceSpan
+from .models import ExtractedDocument
 from .ocr_runtime import OCRRuntimeManager
 from .xlsx_compat import (
     STYLES_PART,
@@ -28,7 +30,9 @@ class Extractor:
         ocr_offline: bool = False,
         docx_document_order: bool = False,
         cache_dir: Path | None = None,
+        markitdown_extensions: frozenset[str] = frozenset(),
     ):
+        self.markitdown_extensions = markitdown_extensions
         self.cache_dir = cache_dir
         self.ocr_runtime = ocr_runtime
         self.ocr_enabled = ocr_enabled
@@ -37,6 +41,18 @@ class Extractor:
 
     def extract(self, path: Path) -> ExtractedDocument:
         suffix = path.suffix.lower()
+        if suffix in self.markitdown_extensions:
+            return formats.extract_markitdown(path)
+        if suffix in {".htm", ".html"}:
+            return formats.extract_html(path)
+        if suffix == ".csv":
+            return formats.extract_csv(path)
+        if suffix == ".json":
+            return formats.extract_json(path)
+        if suffix == ".epub":
+            return formats.extract_epub(path)
+        if suffix in {".odt", ".ods", ".odp"}:
+            return formats.extract_odf(path)
         if suffix in {".txt", ".md", ".markdown"}:
             return _text(path, markdown=suffix != ".txt")
         if suffix == ".docx":
@@ -108,11 +124,8 @@ class Extractor:
                     }
                     for page in routed
                 )
-        complex_pages = set(classification.pages_with_tables) | set(
-            classification.pages_with_columns
-        )
-        reviews.extend(
-            {"page": page, "reason": "complex_layout", "detail": {}} for page in complex_pages
+        complex_pages = sorted(
+            set(classification.pages_with_tables) | set(classification.pages_with_columns)
         )
         builder = _Builder()
         for number, page_data in sorted(pages.items()):
@@ -129,30 +142,11 @@ class Extractor:
             "pages_routed_to_ocr": routed,
             "complex_layout": bool(classification.is_complex_layout),
         }
+        if complex_pages:
+            # Layout is informational (tables/columns), not a work item: flag it, do not queue it.
+            metadata["layout_flags"] = ["complex_layout"]
+            metadata["layout_pages"] = complex_pages
         return ExtractedDocument(builder.text, builder.spans, "application/pdf", metadata, reviews)
-
-
-class _Builder:
-    def __init__(self) -> None:
-        self.parts: list[str] = []
-        self.spans: list[SourceSpan] = []
-        self.length = 0
-
-    def add(
-        self, value: str, kind: str, locator: str, metadata: dict[str, Any] | None = None
-    ) -> None:
-        cleaned = value.strip()
-        if not cleaned:
-            return
-        separator = "\n\n" if self.parts else ""
-        self.parts.append(separator + cleaned)
-        start = self.length + len(separator)
-        self.length += len(separator) + len(cleaned)
-        self.spans.append(SourceSpan(kind, locator, start, self.length, metadata or {}))
-
-    @property
-    def text(self) -> str:
-        return "".join(self.parts)
 
 
 def _text(path: Path, markdown: bool) -> ExtractedDocument:

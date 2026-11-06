@@ -53,6 +53,7 @@ google-drive = [
 ]
 local-embeddings = ["sentence-transformers>=3,<7"]
 rerank = ["sentence-transformers>=3,<7"]
+markitdown = ["markitdown>=0.1,<1"]
 dev = [
   "build>=1.2,<2",
   "mypy==1.20.2",

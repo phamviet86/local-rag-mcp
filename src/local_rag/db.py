@@ -216,6 +216,20 @@ MIGRATIONS = [
     UPDATE chunks SET body_hash=chunk_hash;
     CREATE INDEX chunks_body_hash_idx ON chunks(body_hash);
     """,
+    """
+    UPDATE documents SET metadata_json=json_set(
+      metadata_json,
+      '$.layout_flags', json('["complex_layout"]'),
+      '$.layout_pages', json((SELECT json_group_array(page) FROM
+        (SELECT DISTINCT page FROM reviews r WHERE r.document_id=documents.id
+           AND r.reason='complex_layout' AND r.status='open' AND page IS NOT NULL
+         ORDER BY page))))
+    WHERE id IN (SELECT document_id FROM reviews
+                 WHERE reason='complex_layout' AND status='open' AND document_id IS NOT NULL);
+    UPDATE reviews SET status='resolved', resolution='migrated_to_layout_flag',
+                       updated_at=CURRENT_TIMESTAMP
+    WHERE reason='complex_layout' AND status='open';
+    """,
 ]
 
 
@@ -610,7 +624,7 @@ class Database:
                 "chunks": connection.execute("SELECT count(*) FROM chunks").fetchone()[0],
                 "vectors": connection.execute("SELECT count(*) FROM vectors").fetchone()[0],
                 "open_reviews": connection.execute(
-                    "SELECT count(*) FROM reviews WHERE status='open'"
+                    "SELECT count(*) FROM reviews WHERE status='open' AND reason<>'complex_layout'"
                 ).fetchone()[0],
                 "review_revisions": connection.execute(
                     "SELECT count(*) FROM review_revisions"

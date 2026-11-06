@@ -42,7 +42,17 @@ MIME_SUFFIXES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "text/html": ".html",
+    "text/csv": ".csv",
+    "application/json": ".json",
+    "application/epub+zip": ".epub",
+    "application/vnd.oasis.opendocument.text": ".odt",
+    "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+    "application/vnd.oasis.opendocument.presentation": ".odp",
 }
+_RAW_SUFFIXES = "|".join(
+    sorted({suffix[1:] for suffix in MIME_SUFFIXES.values()} | {"bin"})
+)  # fmt: skip
 SUPPORTED_MIMES = frozenset({*EXPORTS, *MIME_SUFFIXES})
 
 
@@ -937,7 +947,7 @@ class DriveAdapter:
             suffix = _effective_suffix(item, meta)
         key = hashlib.sha256(item.id.encode()).hexdigest()
         retained = f"{key}{suffix}"
-        pattern = re.compile(rf"{key}\.(?:txt|md|pdf|docx|xlsx|pptx|bin)")
+        pattern = re.compile(rf"{key}\.(?:{_RAW_SUFFIXES})")
         if raw_dir.is_dir():
             for path in raw_dir.iterdir():
                 if path.name != retained and pattern.fullmatch(path.name):
@@ -977,7 +987,7 @@ class DriveAdapter:
 
     def _remove_raw(self, key: str) -> int:
         removed = 0
-        pattern = re.compile(rf"{key}\.(?:txt|md|pdf|docx|xlsx|pptx|bin)")
+        pattern = re.compile(rf"{key}\.(?:{_RAW_SUFFIXES})")
         raw_dir = self._raw_dir()
         if raw_dir.is_dir():
             for path in raw_dir.iterdir():
@@ -997,7 +1007,7 @@ class DriveAdapter:
         raw_dir = self._raw_dir()
         if raw_dir.is_dir():
             for path in raw_dir.iterdir():
-                if re.fullmatch(r"[0-9a-f]{64}\.(?:txt|md|pdf|docx|xlsx|pptx|bin)", path.name) and (
+                if re.fullmatch(rf"[0-9a-f]{{64}}\.(?:{_RAW_SUFFIXES})", path.name) and (
                     path.name.split(".")[0] not in keys
                 ):
                     path.unlink(missing_ok=True)

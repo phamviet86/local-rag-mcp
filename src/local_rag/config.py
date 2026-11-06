@@ -7,7 +7,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-SUPPORTED_EXTENSIONS = frozenset({".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx", ".pptx"})
+LEGACY_EXTENSIONS = frozenset({".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx", ".pptx"})
+SUPPORTED_EXTENSIONS = LEGACY_EXTENSIONS | frozenset(
+    {".html", ".htm", ".csv", ".json", ".epub", ".odt", ".ods", ".odp"}
+)
 DEFAULT_EXCLUSIONS = frozenset(
     {".git", ".hg", ".svn", ".venv", "__pycache__", "node_modules", "$RECYCLE.BIN"}
 )
@@ -69,11 +72,16 @@ class Settings:
     rerank_provider: str = "none"
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
     rerank_top_n: int = 30
+    markitdown_extensions: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "root", self.root.expanduser().resolve())
         object.__setattr__(self, "home", self.home.expanduser().resolve())
-        object.__setattr__(self, "extensions", frozenset(_extension(e) for e in self.extensions))
+        markitdown = frozenset(_extension(e) for e in self.markitdown_extensions)
+        object.__setattr__(self, "markitdown_extensions", markitdown)
+        object.__setattr__(
+            self, "extensions", frozenset(_extension(e) for e in self.extensions) | markitdown
+        )
         if not isinstance(self.docx_document_order, bool):
             raise ValueError("docx_document_order must be a boolean")
         if self.chunk_chars < 100 or not 0 <= self.chunk_overlap < self.chunk_chars:
@@ -134,7 +142,10 @@ class Settings:
         self.initialize_layout()
         payload = {
             "root": str(self.root),
-            "extensions": sorted(self.extensions),
+            "extensions": sorted(
+                self.extensions - (self.markitdown_extensions - SUPPORTED_EXTENSIONS)
+            ),
+            "markitdown_extensions": sorted(self.markitdown_extensions),
             "exclusions": sorted(self.exclusions),
             "chunk_chars": self.chunk_chars,
             "chunk_overlap": self.chunk_overlap,
@@ -165,10 +176,15 @@ class Settings:
             )
         payload = json.loads(path.read_text(encoding="utf-8"))
         embedding = embedding_file_settings(data_home)
+        saved = payload.get("extensions")
+        extensions = SUPPORTED_EXTENSIONS if saved is None else frozenset(map(_extension, saved))
+        if extensions == LEGACY_EXTENSIONS:
+            extensions = SUPPORTED_EXTENSIONS  # untouched old default: adopt the new formats
         return cls(
             root=Path(payload["root"]),
             home=data_home,
-            extensions=frozenset(payload.get("extensions", SUPPORTED_EXTENSIONS)),
+            extensions=extensions,
+            markitdown_extensions=frozenset(payload.get("markitdown_extensions", [])),
             exclusions=frozenset(payload.get("exclusions", DEFAULT_EXCLUSIONS)),
             chunk_chars=int(payload.get("chunk_chars", 1200)),
             chunk_overlap=int(payload.get("chunk_overlap", 150)),

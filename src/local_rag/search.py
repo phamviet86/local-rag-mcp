@@ -525,6 +525,7 @@ class SearchEngine:
 
         ocr = bool(chunk_field("ocr"))
         raw_path = chunk_field("section_path")
+        metadata = json.loads(row["metadata_json"])
         return {
             "cite_key": chunk_field("cite_key"),
             "page_start": chunk_field("page_start"),
@@ -573,7 +574,8 @@ class SearchEngine:
                 "doc_no": row["doc_no"] if "doc_no" in keys else None,
                 "locators": [item.get("locator") for item in concise_provenance],
             },
-            "metadata": json.loads(row["metadata_json"]),
+            "layout_flags": metadata.get("layout_flags", []),
+            "metadata": metadata,
         }
 
     def _relative_scope(self, scope: str | None) -> str | None:
@@ -709,6 +711,8 @@ class SearchEngine:
             "total_chars": total_chars,
             "provenance": spans,
             "has_review_corrections": bool(document["effective_artifact_path"]),
+            "layout_flags": json.loads(document["metadata_json"]).get("layout_flags", []),
+            "layout_pages": json.loads(document["metadata_json"]).get("layout_pages", []),
             **({"trashed_at": document["trashed_at"]} if document["trashed_at"] else {}),
         }
 

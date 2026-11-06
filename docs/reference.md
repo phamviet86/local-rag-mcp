@@ -69,7 +69,8 @@ A service account is the alternative: `source add-drive ... --service-account-ke
 exclusive with `--token-file`, key mode `0600`); see [setup.md](setup.md).
 
 Full sync walks the configured root, rejects incomplete listings and unsafe path segments, and
-supports text/Markdown, PDF, DOCX, XLSX, PPTX, Google Docs, Sheets, and Slides. Incremental sync
+supports text/Markdown, PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, EPUB, ODT/ODS/ODP, Google Docs,
+Sheets, and Slides. Incremental sync
 consumes the Drive changes cursor and downloads/extracts only changed content fingerprints. If any
 changed item fails download, extraction, or indexing, the durable cursor is not advanced, so the
 change page can be retried safely.
@@ -291,6 +292,46 @@ for context. Window is total characters centered on the hit, clamped at text bou
 Search accepts `per_document` (CLI `--per-document`, default 3, range 1..100). It caps primary
 hits per document and collapses identical chunk hashes. Each content hit includes `locations`
 with all matching enabled, in-scope document positions and citations, including copied files.
+
+### File formats
+
+Default extensions: `.txt .md .markdown .pdf .docx .xlsx .pptx` plus `.html .htm .csv .json .epub
+.odt .ods .odp` (the new ones use the Python standard library only). Drive indexes the same formats
+by MIME type (`text/html`, `text/csv`, `application/json`, `application/epub+zip` and the ODF types).
+A home whose saved `extensions` equal the previous default list adopts the new defaults on load;
+a customized list is left as saved.
+
+| Format | Text | Locator |
+| --- | --- | --- |
+| HTML | visible text; `script`/`style` dropped, headings become Markdown headings | `block:N` |
+| CSV | one `header: value; ...` line per data row | `row:N` |
+| JSON | flattened `path: value` leaves (50 MiB / 200,000 value limit) | `$.a.b[0]` |
+| EPUB | chapters in spine order, each through the HTML reader | `chapter:N` |
+| ODT / ODS / ODP | paragraphs and headings / rows / slides from `content.xml` | `paragraph:N`, `sheet:S/row:N`, `slide:N` |
+
+Legacy formats such as `.doc`, `.rtf` or `.xls` can be converted by the optional `markitdown` extra
+(`pip install 'phamviet-local-rag-mcp[markitdown]'`). List the extensions in `config.json`, for
+example `"markitdown_extensions": [".doc", ".rtf", ".xls"]` (default `[]`); each listed file becomes
+one Markdown span (locator `document`). Without the library the affected files fail individually with
+`code=markitdown_missing` in the report and coverage while the rest of the source indexes normally.
+New extraction codes: `format_parse_failed`, `format_too_large`, `markitdown_missing`,
+`markitdown_failed`.
+
+### Drive page images and integrity
+
+`get_page_image` also works for Drive PDFs when the raw download is still cached
+(`cache/sources/<id>/raw/`); the result adds `cache_matches_index` (the cached file's sha256 equals
+the indexed `content_hash`). Without the cache it fails with `page_image_unavailable`; run `refresh`
+for the source and retry. `check_status` re-hashes the same cached file for Drive documents
+(`integrity.checked: true`, `basis: drive_raw_cache`) and reports `checked: false` when it is absent.
+
+### Layout flags
+
+PDF pages with tables or columns no longer enter the review queue. Documents carry
+`layout_flags: ["complex_layout"]` and `layout_pages` in their metadata, returned by `search`
+(`layout_flags`) and `read` (`layout_flags`, `layout_pages`); `doctor` does not count them. OCR
+reasons (`ocr_runtime_missing`, `low_quality_ocr`, ...) still create reviews. Migration 13 resolves
+open `complex_layout` reviews with the note `migrated_to_layout_flag`.
 
 DOCX extraction records heading paths without changing default paragraph-then-table text.
 For existing files, explicit `reindex --source NAME --reextract` refreshes provenance. To emit

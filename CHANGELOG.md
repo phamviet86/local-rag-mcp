@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+- Index HTML/HTM, CSV, JSON, EPUB and ODT/ODS/ODP files (standard library only) locally and from
+  Drive (new MIME types). Locators: `block:N`, `row:N`, JSON paths, `chapter:N`,
+  `paragraph:N`/`sheet:S/row:N`/`slide:N`. A saved extension list equal to the old default adopts
+  the new defaults. Add the optional `markitdown` extra and `markitdown_extensions` (default `[]`)
+  to convert listed legacy extensions; a missing library fails only those files
+  (`code=markitdown_missing`).
+- `get_page_image` and `check_status` now work for Drive PDFs through the raw download cache
+  (`cache_matches_index`, `integrity.checked: true`); without the cache the error is
+  `page_image_unavailable` (run `refresh`).
+- PDF `complex_layout` is now a document flag (`layout_flags`, `layout_pages`, returned by `search`
+  and `read`) instead of a review item, so `doctor` is no longer `warning` because of it. Migration
+  13 resolves open `complex_layout` reviews (`migrated_to_layout_flag`) and writes the flag to their
+  documents; OCR reviews are unchanged.
 - `eval` now also reports `mrr@10` and `ndcg@10`, overall and per group; the full-text baseline is
   recorded in [docs/eval-baseline.md](docs/eval-baseline.md).
 - Add an optional cross-encoder reranker: settings `rerank_provider` (`none` default | `local`),

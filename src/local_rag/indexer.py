@@ -1031,12 +1031,20 @@ def _automatic_metadata(
 
 
 def _document_from_artifact(payload: dict[str, Any]) -> ExtractedDocument:
+    metadata = dict(payload.get("metadata", {}))
+    reviews = payload.get("reviews", [])
+    layout = [review for review in reviews if review.get("reason") == "complex_layout"]
+    if layout:
+        # Artifacts written before layout became a flag: never re-queue it as a review.
+        reviews = [review for review in reviews if review.get("reason") != "complex_layout"]
+        metadata.setdefault("layout_flags", ["complex_layout"])
+        metadata.setdefault("layout_pages", sorted({review.get("page") for review in layout}))
     return ExtractedDocument(
         payload["text"],
         [SourceSpan(**span) for span in payload["spans"]],
         payload["media_type"],
-        payload.get("metadata", {}),
-        payload.get("reviews", []),
+        metadata,
+        reviews,
     )
 
 
