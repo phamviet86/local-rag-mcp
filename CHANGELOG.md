@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+- The `serve` daemon is now the job executor: it publishes a heartbeat (migration 10,
+  `daemon_heartbeat`, every 10 seconds) and runs `queued` index jobs left by other processes. When a
+  daemon is alive, MCP/CLI `start_index_job` callers only enqueue and report `"executor": "daemon"`
+  (`"this_process"` otherwise). `doctor` gains a non-blocking `daemon` check.
+- Fix the job queue: `queued` jobs older than 20 minutes now expire to `error`, CLI
+  `reconcile`/`reindex` no longer run a job that is rejected or already running, and watcher file
+  events rejected by an active job are retried instead of lost.
 - Add structure-aware chunking for Vietnamese legal text: one chunk per Điều (split by khoản when
   longer than `structure_max_chars`, default 2000), a context line `số hiệu | tên | Chương | Điều`,
   Markdown heading sections, and a fixed-window fallback (`chunk_strategy`: `structure` default or

@@ -53,6 +53,31 @@ results honestly. When embeddings are unavailable, full-text retrieval remains u
 the entire index is unavailable. When OCR is unavailable, native extraction remains usable and
 OCR-routed PDF pages are held in the review queue.
 
+## Job executor: the `serve` daemon
+
+`local-rag-mcp serve` is the job executor. It writes a heartbeat to the database every 10 seconds
+(from a separate thread, so a long inline job does not look like a dead daemon) and, whenever no
+job is running, claims the oldest `queued` job and runs it inline. A heartbeat older than 30 seconds
+means the daemon is considered dead.
+
+- **Daemon alive:** MCP tools and CLI commands that start an index job from another process (for
+  example a stdio session over SSH) only enqueue it and return the job with `"executor": "daemon"`.
+  Dropping that session does not affect the job. Poll it with `job_status`.
+- **No daemon:** behavior is unchanged: the job runs in the calling process and the result carries
+  `"executor": "this_process"`. CLI `reconcile`/`reindex` always run in the foreground unless
+  `--background` is given, and never re-run a job that is rejected, running or finished.
+- **Orphans:** a job left `queued` for more than 20 minutes without being started becomes `error`
+  (`queued job was never started`) so it cannot block new jobs.
+- **File events:** per-file jobs rejected because another job is active are kept and retried on a
+  later tick; they are not dropped.
+- `doctor` reports a `daemon` check: `ok` with `pid`, `hostname` and `heartbeat_at`, or `warning`
+  ("no serve daemon: scheduled sync and queued jobs will not run; jobs run in the calling process").
+  The warning is not blocking.
+- **Unclean stop:** after a crash or kill, `daemon_alive` can stay true for up to 30 seconds. Jobs
+  enqueued in that window wait for the next daemon and expire after 20 minutes if none starts.
+- Synchronous MCP tools (`reconcile`, `reindex`, `relocate_source`) and CLI foreground commands always
+  run in the calling process; over SSH prefer `start_reconcile`/`start_reindex` + `job_status`.
+
 ## Empty state is normal
 
 An operator may intentionally install the service with zero sources. `no_enabled_sources` means no

@@ -317,7 +317,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.source_command == "relocate":
             output = service.start_index_job(
-                "relocate", args.source, str(args.new_path.expanduser().resolve()), background=False
+                "relocate",
+                args.source,
+                str(args.new_path.expanduser().resolve()),
+                background=False,
+                defer_to_daemon=False,
             )
         elif args.source_command in {"enable", "disable"}:
             output = service.enable_source(args.source, args.source_command == "enable")
@@ -331,7 +335,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _spawn_job(home, str(job["id"]))
             output = job
         else:
-            output = service.run_index_job(str(job["id"]))
+            output = service.run_enqueued_job(job, defer_to_daemon=False)
     elif command in {"reindex", "rebuild"}:
         if not args.all and not args.source and not args.target:
             raise SystemExit("reindex requires --all, --source, or --target")
@@ -346,7 +350,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _spawn_job(home, str(job["id"]))
             output = job
         else:
-            output = service.run_index_job(str(job["id"]))
+            output = service.run_enqueued_job(job, defer_to_daemon=False)
     elif command == "search":
         output = service.search(
             args.query,

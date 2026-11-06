@@ -199,6 +199,13 @@ MIGRATIONS = [
     );
     CREATE INDEX document_validity_from_idx ON document_validity(effective_from);
     """,
+    """
+    CREATE TABLE daemon_heartbeat (
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+      pid INTEGER NOT NULL, hostname TEXT NOT NULL,
+      started_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL
+    );
+    """,
 ]
 
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -13,8 +15,11 @@ from watchdog.observers import Observer
 
 from .config import Settings
 from .indexer import Indexer
+from .jobs import write_daemon_heartbeat
 from .service import LocalRAG, MultiSourceRAG
 from .sources import SourceRecord
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -85,8 +90,16 @@ class CoalescingEventHandler(FileSystemEventHandler):
         ready = self.drain_ready(force)
         return self.apply_changes(ready)
 
-    def drain_ready(self, force: bool = False) -> list[PendingChange]:
-        now = time.monotonic()
+    def requeue(self, change: PendingChange, delay: float, now: float | None = None) -> None:
+        """Put a change back unless a newer event for the same path arrived meanwhile."""
+        key = str(change.path.resolve())
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            if key not in self._pending:
+                self._pending[key] = replace(change, ready_at=moment + delay)
+
+    def drain_ready(self, force: bool = False, now: float | None = None) -> list[PendingChange]:
+        now = time.monotonic() if now is None else now
         with self._lock:
             ready = [
                 (key, change)
@@ -165,13 +178,23 @@ class _SourceFacade:
 
 
 class MultiSourceWatchService:
-    """One native observer with one coalescing handler per enabled local source."""
+    """One native observer with one coalescing handler per enabled local source.
+
+    This is the serve daemon: it publishes a heartbeat so other processes defer index jobs to
+    it, and it executes jobs that those processes left queued.
+    """
+
+    HEARTBEAT_SECONDS = 10.0
+    RETRY_SECONDS = 1.0
+    LOG_THROTTLE_SECONDS = 60.0
 
     def __init__(self, service: MultiSourceRAG):
         self.service = service
         self.observer = Observer()
         self.handlers: list[tuple[SourceRecord, CoalescingEventHandler]] = []
         self.stop_event = threading.Event()
+        self.started_at = datetime.now(UTC)
+        self._error_logged: dict[str, float] = {}
         for source in service.registry.list(enabled=True):
             if source.kind != "local":
                 continue
@@ -180,22 +203,64 @@ class MultiSourceWatchService:
             self.handlers.append((source, handler))
             self.observer.schedule(handler, source.locator, recursive=True)
 
+    def heartbeat(self, now: datetime | None = None) -> None:
+        write_daemon_heartbeat(self.service.db, self.started_at, now=now)
+
+    def _heartbeat_loop(self) -> None:
+        # A separate thread: an inline job may run for minutes and must not look like a dead daemon.
+        while not self.stop_event.wait(self.HEARTBEAT_SECONDS):
+            try:
+                self.heartbeat()
+            except Exception:
+                continue
+
     def run(self) -> None:
-        self.service.start_index_job("reconcile", background=False)
+        self.heartbeat()
+        heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, name="local-rag-daemon-heartbeat", daemon=True
+        )
+        heartbeat_thread.start()
+        self.service.start_index_job("reconcile", background=False, defer_to_daemon=False)
         self.observer.start()
         last_reconcile = time.monotonic()
         try:
             while not self.stop_event.wait(0.1):
-                for source, handler in self.handlers:
-                    self._flush_source(source, handler)
+                self.tick()
                 if time.monotonic() - last_reconcile >= self.service.settings.reconcile_seconds:
-                    self.service.start_index_job("reconcile", background=False)
+                    self.service.start_index_job(
+                        "reconcile", background=False, defer_to_daemon=False
+                    )
                     last_reconcile = time.monotonic()
         finally:
             for source, handler in self.handlers:
                 self._flush_source(source, handler, force=True)
             self.observer.stop()
             self.observer.join()
+            self.stop_event.set()
+            heartbeat_thread.join(timeout=1)
+
+    def _log_tick_error(self, exc: Exception, now: float | None = None) -> None:
+        message = str(exc)
+        if isinstance(exc, RuntimeError) and "lease is held by another job" in message:
+            # Expected: another process is indexing; the job stays queued for a later tick.
+            LOGGER.debug("queued job deferred: %s", message)
+            return
+        moment = time.monotonic() if now is None else now
+        last = self._error_logged.get(message)
+        if last is None or moment - last >= self.LOG_THROTTLE_SECONDS:
+            self._error_logged[message] = moment
+            LOGGER.warning("daemon failed to run queued job: %s", message)
+
+    def tick(self, now: float | None = None) -> None:
+        """One scheduler step: claim a queued job, then flush file events if the queue is idle."""
+        try:
+            self.service.run_next_queued_job()
+        except Exception as exc:
+            self._log_tick_error(exc)
+        if self.service.index_status()["active"]:
+            return
+        for source, handler in self.handlers:
+            self._flush_source(source, handler, now=now)
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -206,12 +271,23 @@ class MultiSourceWatchService:
         handler: CoalescingEventHandler,
         *,
         force: bool = False,
+        now: float | None = None,
     ) -> None:
-        for change in handler.drain_ready(force):
+        for change in handler.drain_ready(force, now):
             targets = [change.path]
             if change.kind == "moved" and change.source is not None:
                 targets.insert(0, change.source)
+            rejected = False
             for target in targets:
-                self.service.start_index_job(
-                    "reconcile", source.name, str(target), background=False
+                job = self.service.start_index_job(
+                    "reconcile",
+                    source.name,
+                    str(target),
+                    background=False,
+                    defer_to_daemon=False,
                 )
+                if job["state"] == "rejected":
+                    rejected = True
+            if rejected and not force:
+                # Another job is active; keep the event and retry on a later tick.
+                handler.requeue(change, self.RETRY_SECONDS, now)

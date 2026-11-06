@@ -33,6 +33,13 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
     }
 
 
+def _sync_note(start_tool: str) -> str:
+    return (
+        " Runs synchronously; a long run can be lost if the connection drops, "
+        f"so prefer {start_tool} + job_status over SSH."
+    )
+
+
 READER_TOOLS = [
     {
         "name": "search",
@@ -247,7 +254,8 @@ REVIEWER_TOOLS = [
 ADMIN_TOOLS = [
     {
         "name": "relocate_source",
-        "description": "Relocate a local source index to an existing folder, then reconcile.",
+        "description": "Relocate a local source index to an existing folder, then reconcile."
+        + _sync_note("reconcile"),
         "inputSchema": _schema(
             {"source": {"type": "string"}, "new_path": {"type": "string"}},
             ["source", "new_path"],
@@ -278,7 +286,8 @@ ADMIN_TOOLS = [
     },
     {
         "name": "reconcile",
-        "description": "Incrementally reconcile one source or every enabled source.",
+        "description": "Incrementally reconcile one source or every enabled source."
+        + _sync_note("reconcile"),
         "inputSchema": _schema(
             {
                 "source": {"type": "string"},
@@ -289,7 +298,8 @@ ADMIN_TOOLS = [
     },
     {
         "name": "reindex",
-        "description": "Rebuild cached index state; reextract is explicit and defaults false.",
+        "description": "Rebuild cached index state; reextract is explicit and defaults false."
+        + _sync_note("reindex"),
         "inputSchema": _schema(
             {
                 "source": {"type": "string"},
@@ -502,7 +512,11 @@ class MCPServer:
             )
         if name == "relocate_source":
             return self.service.start_index_job(
-                "relocate", values["source"], values["new_path"], background=False
+                "relocate",
+                values["source"],
+                values["new_path"],
+                background=False,
+                defer_to_daemon=False,
             )
         if name == "reconcile":
             return (
@@ -512,6 +526,7 @@ class MCPServer:
                     values.get("target"),
                     full=bool(values.get("full", False)),
                     background=False,
+                    defer_to_daemon=False,
                 )
                 if multi
                 else self.service.scan(values.get("target"))
@@ -542,6 +557,7 @@ class MCPServer:
                     reextract=bool(values.get("reextract", False)),
                     full=bool(values.get("all", False)),
                     background=False,
+                    defer_to_daemon=False,
                 )
                 if multi
                 else self.service.scan(
@@ -954,7 +970,10 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             target: str | None = None,
             full: bool = False,
         ) -> dict[str, Any]:
-            """Incrementally reconcile one source or every enabled source."""
+            """Incrementally reconcile one source or every enabled source.
+
+            Long runs can be lost if the connection drops; prefer start_reconcile + job_status.
+            """
             return _dict_result(
                 dispatcher.call("reconcile", {"source": source, "target": target, "full": full})
             )
@@ -966,7 +985,10 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             reextract: bool = False,
             all: bool = False,
         ) -> dict[str, Any]:
-            """Rebuild cached index state, optionally rerunning extraction/OCR."""
+            """Rebuild cached index state, optionally rerunning extraction/OCR.
+
+            Long runs can be lost if the connection drops; prefer start_reindex + job_status.
+            """
             return _dict_result(
                 dispatcher.call(
                     "reindex",
@@ -976,7 +998,10 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
 
         @server.tool(annotations=indexing)
         def relocate_source(source: str, new_path: str) -> dict[str, Any]:
-            """Relocate a local index without moving authoritative files."""
+            """Relocate a local index without moving authoritative files.
+
+            Long runs can be lost if the connection drops; prefer start_reconcile + job_status.
+            """
             return _dict_result(
                 dispatcher.call("relocate_source", {"source": source, "new_path": new_path})
             )

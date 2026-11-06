@@ -18,7 +18,7 @@ from .embeddings import (
 )
 from .extract import Extractor
 from .indexer import Indexer
-from .jobs import IndexJobManager
+from .jobs import IndexJobManager, daemon_alive, daemon_info
 from .ocr_runtime import OCRRuntimeManager
 from .search import SearchEngine
 from .sources import SourceRecord, SourceRegistry, source_settings
@@ -665,6 +665,33 @@ class MultiSourceRAG:
             return self.jobs.start_background(job_id, execute, self._embedding_pending_count)
         return self.jobs.run(job_id, execute, self._embedding_pending_count)
 
+    def run_enqueued_job(
+        self,
+        job: dict[str, Any],
+        *,
+        background: bool = False,
+        defer_to_daemon: bool = True,
+    ) -> dict[str, Any]:
+        """Run a freshly enqueued job unless it is not ours to run.
+
+        Rejected, finished or already running jobs are returned untouched so a job held by
+        another process is never executed twice. When a serve daemon is alive and the caller is
+        not that daemon, the job stays queued for the daemon to claim.
+        """
+        if job["state"] in {"rejected", "complete", "error", "running"}:
+            return job
+        if defer_to_daemon and daemon_alive(self.db):
+            return {**job, "executor": "daemon"}
+        result = self.run_index_job(str(job["id"]), background=background)
+        return {**result, "executor": "this_process"}
+
+    def run_next_queued_job(self) -> dict[str, Any] | None:
+        """Daemon entry point: run the oldest queued job inline when nothing is running."""
+        job_id = self.jobs.next_queued()
+        if job_id is None:
+            return None
+        return self.run_index_job(job_id, background=False)
+
     def start_index_job(
         self,
         kind: str,
@@ -674,11 +701,10 @@ class MultiSourceRAG:
         reextract: bool = False,
         full: bool = False,
         background: bool = True,
+        defer_to_daemon: bool = True,
     ) -> dict[str, Any]:
         job = self.enqueue_index_job(kind, source, target, reextract=reextract, full=full)
-        if job["state"] in {"rejected", "complete", "error", "running"}:
-            return job
-        return self.run_index_job(str(job["id"]), background=background)
+        return self.run_enqueued_job(job, background=background, defer_to_daemon=defer_to_daemon)
 
     def _embedding_pending_count(self) -> int:
         if self.embeddings is None:
@@ -789,6 +815,24 @@ class MultiSourceRAG:
             ],
             "message": "sync errors detected" if sync_errors else "no recorded sync errors",
         }
+        daemon = daemon_info(self.db) if database_ok else None
+        if daemon is not None:
+            checks["daemon"] = {
+                "status": "ok",
+                "pid": daemon["pid"],
+                "hostname": daemon["hostname"],
+                "heartbeat_at": daemon["heartbeat_at"],
+                "message": "serve daemon is running and executes queued jobs",
+            }
+        else:
+            checks["daemon"] = {
+                "status": "warning",
+                "message": (
+                    "no serve daemon: scheduled sync and queued jobs will not run; "
+                    "jobs run in the calling process"
+                ),
+            }
+            actions.append({"command": "local-rag-mcp serve"})
         blocking = not database_ok or not enabled or ocr_status == "error" or bool(sync_errors)
         degraded = any(check["status"] == "warning" for check in checks.values())
         return {
