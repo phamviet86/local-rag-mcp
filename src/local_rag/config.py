@@ -66,6 +66,9 @@ class Settings:
     openai_api_key: str | None = None
     ocr_mode: str = "unconfigured"
     docx_document_order: bool = False
+    rerank_provider: str = "none"
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_top_n: int = 30
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "root", self.root.expanduser().resolve())
@@ -81,6 +84,12 @@ class Settings:
             raise ValueError("structure_max_chars must be at least 200")
         if self.embedding_provider not in {"none", "local", "openai"}:
             raise ValueError("embedding_provider must be none, local, or openai")
+        if self.rerank_provider not in {"none", "local"}:
+            raise ValueError("rerank_provider must be none or local")
+        if not self.rerank_model.strip():
+            raise ValueError("rerank_model must not be empty")
+        if not 1 <= self.rerank_top_n <= 200:
+            raise ValueError("rerank_top_n must be between 1 and 200")
         if self.ocr_mode not in {"unconfigured", "full", "no-ocr"}:
             raise ValueError("ocr_mode must be unconfigured, full, or no-ocr")
 
@@ -137,6 +146,9 @@ class Settings:
             "openai_base_url": self.openai_base_url,
             "ocr_mode": self.ocr_mode,
             "docx_document_order": self.docx_document_order,
+            "rerank_provider": self.rerank_provider,
+            "rerank_model": self.rerank_model,
+            "rerank_top_n": self.rerank_top_n,
         }
         temporary = self.config_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -186,6 +198,13 @@ class Settings:
             or None,
             ocr_mode=str(payload.get("ocr_mode", "unconfigured")),
             docx_document_order=payload.get("docx_document_order", False),
+            rerank_provider=os.environ.get("LOCAL_RAG_MCP_RERANK_PROVIDER")
+            or str(payload.get("rerank_provider", "none")),
+            rerank_model=os.environ.get("LOCAL_RAG_MCP_RERANK_MODEL")
+            or str(payload.get("rerank_model", "BAAI/bge-reranker-v2-m3")),
+            rerank_top_n=int(
+                os.environ.get("LOCAL_RAG_MCP_RERANK_TOP_N") or payload.get("rerank_top_n", 30)
+            ),
         )
 
     def contains(self, path: Path) -> bool:

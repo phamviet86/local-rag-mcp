@@ -21,6 +21,7 @@ from .extract import Extractor
 from .indexer import Indexer, remove_unreferenced_artifacts
 from .jobs import IndexJobManager, daemon_alive, daemon_info, iso_z, parse_utc
 from .ocr_runtime import OCRRuntimeManager
+from .rerank import Reranker, configured_reranker, reranker_status
 from .search import SearchEngine
 from .sources import (
     LAST_FULL_KEY,
@@ -78,7 +79,12 @@ def render_document_page(
 
 
 class LocalRAG:
-    def __init__(self, settings: Settings, embeddings: EmbeddingProvider | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        embeddings: EmbeddingProvider | None = None,
+        reranker: Reranker | None = None,
+    ):
         settings.initialize_layout()
         self.settings = settings
         self.db = Database(settings.database)
@@ -111,7 +117,10 @@ class LocalRAG:
             source_id=str(source["id"]),
             source_name=str(source["name"]),
         )
-        self.search_engine = SearchEngine(settings, self.db, self.embeddings)
+        self.reranker = configured_reranker(settings) if reranker is None else reranker
+        self.search_engine = SearchEngine(
+            settings, self.db, self.embeddings, reranker=self.reranker
+        )
 
     def scan(
         self,
@@ -186,6 +195,7 @@ class LocalRAG:
             "embedding_provider": self.settings.embedding_provider,
             "embedding_model": self.settings.embedding_model,
             "embedding_identity": public_identity(self.embeddings),
+            "reranker": reranker_status(self.settings, self.reranker),
             "ocr_runtime_installed": self.ocr_runtime.configure(),
         }
 
@@ -248,6 +258,7 @@ class MultiSourceRAG:
         embeddings: EmbeddingProvider | None = None,
         drive_backend_factory: Callable[[SourceRecord], Any] | None = None,
         clock: Callable[[], datetime] | None = None,
+        reranker: Reranker | None = None,
     ):
         settings.initialize_layout()
         self.settings = settings
@@ -267,7 +278,10 @@ class MultiSourceRAG:
             docx_document_order=settings.docx_document_order,
             cache_dir=settings.cache_dir,
         )
-        self.search_engine = SearchEngine(settings, self.db, self.embeddings)
+        self.reranker = configured_reranker(settings) if reranker is None else reranker
+        self.search_engine = SearchEngine(
+            settings, self.db, self.embeddings, reranker=self.reranker
+        )
         self.drive_backend_factory = drive_backend_factory
         self.jobs = IndexJobManager(self.db)
 
@@ -668,6 +682,7 @@ class MultiSourceRAG:
             "embedding_provider": self.settings.embedding_provider,
             "embedding_model": self.settings.embedding_model,
             "embedding_identity": public_identity(self.embeddings),
+            "reranker": reranker_status(self.settings, self.reranker),
             "ocr_runtime_installed": self.ocr_runtime.configure(),
             "ocr_mode": self.settings.ocr_mode,
             "reconcile_seconds": self.settings.reconcile_seconds,
@@ -858,6 +873,13 @@ class MultiSourceRAG:
             "identity": public_identity(self.embeddings),
             "message": embedding_message,
         }
+        rerank = reranker_status(self.settings, self.reranker)
+        checks["reranker"] = {
+            "status": "ok" if rerank["available"] or rerank["provider"] == "none" else "warning",
+            **rerank,
+        }
+        if rerank["provider"] != "none" and not rerank["available"]:
+            actions.append({"command": "pip install 'phamviet-local-rag-mcp[rerank]'"})
         if embedding_action == "install_local_embeddings":
             actions.append({"command": "pip install 'phamviet-local-rag-mcp[local-embeddings]'"})
         elif embedding_action == "configure_openai_key":

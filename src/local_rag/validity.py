@@ -107,8 +107,8 @@ def check_status(db: Database, path: str, on: str, source: str | None = None) ->
             for row in connection.execute(
                 """SELECT DISTINCT d.doc_no FROM chunks c JOIN documents d ON d.id=c.document_id
                    WHERE d.id<>? AND d.content_hash<>? AND d.trashed_at IS NULL
-                     AND c.chunk_hash IN
-                     (SELECT chunk_hash FROM chunks WHERE document_id=?)""",
+                     AND c.body_hash IN
+                     (SELECT body_hash FROM chunks WHERE document_id=?)""",
                 (document["id"], document["content_hash"], document["id"]),
             )
         ]

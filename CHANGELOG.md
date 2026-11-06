@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+- `eval` now also reports `mrr@10` and `ndcg@10`, overall and per group; the full-text baseline is
+  recorded in [docs/eval-baseline.md](docs/eval-baseline.md).
+- Add an optional cross-encoder reranker: settings `rerank_provider` (`none` default | `local`),
+  `rerank_model` (default `BAAI/bge-reranker-v2-m3`) and `rerank_top_n` (default 30, env
+  `LOCAL_RAG_MCP_RERANK_PROVIDER/MODEL/TOP_N`), install with the `rerank` extra. It reorders the top
+  candidates by the full chunk text after hybrid scoring and before document-number priority;
+  reordered hits carry `reranked: true` and `rerank_score`. A failure adds a search warning and keeps
+  the original order. `status` and `doctor` report the reranker (provider, model, available).
+- Window (non-structured) chunks now start with a context line `title | relative_path`, the same
+  `a | b` format as structured chunks, so FTS and embeddings see the document context.
+  `start_char`/`end_char` still point at the body, so a hit's text is the context line plus the
+  source slice. Window chunks' `chunk_hash` now covers the stored text including the context line,
+  as structured chunks already did, so vectors are keyed per context. Migration 12 adds
+  `chunks.body_hash` (backfilled from `chunk_hash`; hash of the body alone for window chunks), which
+  duplicate collapse, search `locations` and the `DUPLICATE_CONTENT` check use, so identical copies
+  still collapse in results. Existing data needs `reindex --reextract` to apply this: window chunks
+  get new hashes and are re-embedded, and their old vectors become orphans that the next orphan
+  purge (artifact cleanup or source removal) deletes. The path in a context line is not rewritten
+  when a file is moved until the next reextract.
+- With a reranker configured, search gathers `max(limit, rerank_top_n)` candidates, reranks, then cuts
+  to `limit`. `eval` nDCG@10 is binary DCG over all gold keys (each credited once).
 - Add the reader MCP tool and CLI `list [--source --folder --media-type --doc-type --modified-after
   --modified-before --include-trashed --limit --cursor]` (`list_documents`): keyset-paginated
   listing ordered by `(source_id, id)` with an opaque `next_cursor` and `total`; trashed Drive

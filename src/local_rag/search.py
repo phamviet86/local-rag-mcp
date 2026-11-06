@@ -16,6 +16,7 @@ from .config import Settings
 from .db import Database, fts_fold, stable_ref
 from .embeddings import EmbeddingProvider, cache_identity
 from .legal import is_number_query, make_key
+from .rerank import Reranker
 
 SEARCH_MODES = ("full_text", "semantic", "hybrid")
 MATCH_MODES = ("any", "all", "phrase", "auto")
@@ -33,10 +34,12 @@ class SearchEngine:
         database: Database,
         embeddings: EmbeddingProvider | None = None,
         query_cache_size: int = 128,
+        reranker: Reranker | None = None,
     ):
         self.settings = settings
         self.db = database
         self.embeddings = embeddings
+        self.reranker = reranker
         self.query_cache_size = query_cache_size
         self._query_cache: OrderedDict[tuple[str, str, str], Sequence[float]] = OrderedDict()
         self._cache_lock = threading.Lock()
@@ -76,6 +79,9 @@ class SearchEngine:
         filters = (media_type, modified_after, modified_before, doc_type, valid_on)
         _filter_sql(relative_scope, source, *filters)  # Validate even for an empty index.
         warnings: list[str] = []
+        output_limit = limit
+        if self.reranker is not None:
+            limit = max(limit, self.settings.rerank_top_n)  # candidate pool for the reranker
         lexical = (
             self._full_text(
                 terms, relative_scope, source, limit, filters, "all" if match == "auto" else match
@@ -105,10 +111,13 @@ class SearchEngine:
         if mode == "hybrid" and not semantic:
             effective_mode = "full_text"
         results = self._combine(lexical, semantic, limit, effective_mode)
+        results = self._rerank(query, results, warnings)
         results = self._prioritize_document_number(
-            results, query, doc_no, relative_scope, source, filters, limit
+            results, query, doc_no, relative_scope, source, filters, output_limit
         )
-        results = self._diversify(results, per_document, limit, relative_scope, source, filters)
+        results = self._diversify(
+            results, per_document, output_limit, relative_scope, source, filters
+        )
         return {
             "mode": mode,
             "match": requested_match,
@@ -119,6 +128,41 @@ class SearchEngine:
             "warnings": warnings,
             "results": results,
         }
+
+    def _rerank(
+        self, query: str, results: list[dict[str, Any]], warnings: list[str]
+    ) -> list[dict[str, Any]]:
+        """Reorder the top candidates with a cross-encoder over each chunk's full text."""
+        # `_full_text` carries the untruncated chunk text (result text is cut to 1200 chars).
+        full_texts = [str(item.pop("_full_text", item["text"])) for item in results]
+        reranker = self.reranker
+        if reranker is None or len(results) < 2:
+            return results
+        count = self.settings.rerank_top_n
+        head, tail = results[:count], results[count:]
+        texts = full_texts[:count]
+        try:
+            scores = reranker.rerank(query, texts)
+            if len(scores) != len(head):
+                raise RuntimeError("reranker returned an unexpected score count")
+        except Exception as exc:
+            warnings.append(f"rerank unavailable; keeping original order: {exc}")
+            return results
+        order = sorted(range(len(head)), key=lambda i: (-float(scores[i]), i))
+        top = max(float(item["score"]) for item in head)
+        floor = float(tail[0]["score"]) if tail else 0.0
+        count = len(head)
+        # Spread head scores over (floor, top] in the new order; the last head item stays
+        # strictly above the first untouched tail item.
+        span = max(top - floor, count * 1e-6)
+        reordered = []
+        for position, index in enumerate(order):
+            item = head[index]
+            item["reranked"] = True
+            item["rerank_score"] = round(float(scores[index]), 6)
+            item["score"] = round(floor + span * (count - position) / count, 6)
+            reordered.append(item)
+        return [*reordered, *tail]
 
     def _full_text(
         self,
@@ -395,6 +439,10 @@ class SearchEngine:
             else:
                 score = lexical_score
             result = self._result(entry, score)
+            row = entry["row"]
+            result["_full_text"] = (
+                f"{row['kind']}: {row['content']}" if "text" not in row.keys() else row["text"]  # noqa: SIM118
+            )
             if "#phu-luc" in str(result["cite_key"]):
                 result["score"] = round(result["score"] * 0.85, 6)  # forms rank below articles
             output.append(result)
@@ -413,7 +461,7 @@ class SearchEngine:
         seen: set[str] = set()
         selected = []
         for result in results:
-            key = result["chunk_hash"]
+            key = result["body_hash"]
             if key and key in seen:
                 continue
             if counts[result["stable_ref"]] >= per_document:
@@ -429,16 +477,16 @@ class SearchEngine:
         filter_sql, values = _filter_sql(scope, source, *filters)
         with self.db.connect() as connection:
             for result in selected:
-                if not result["chunk_hash"]:
+                if not result["body_hash"]:
                     continue
                 rows = connection.execute(
                     f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
                         d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,d.doc_no,
                         s.name source_name,s.kind source_kind FROM chunks c
                         JOIN documents d ON d.id=c.document_id JOIN sources s ON s.id=d.source_id
-                        WHERE c.chunk_hash=? AND s.enabled=1 {filter_sql}
+                        WHERE c.body_hash=? AND s.enabled=1 {filter_sql}
                         ORDER BY d.id,c.ordinal""",
-                    [result["chunk_hash"], *values],
+                    [result["body_hash"], *values],
                 ).fetchall()
                 result["locations"] = [
                     {
@@ -493,6 +541,7 @@ class SearchEngine:
             "document_ref": f"{row['source_name']}:{row['relative_path']}",
             "stable_ref": stable_ref(row),
             "chunk_hash": None if is_metadata else row["chunk_hash"],
+            "body_hash": None if is_metadata else row["body_hash"] or row["chunk_hash"],
             "chunk_ordinal": None if is_metadata else row["ordinal"],
             "start_char": None if is_metadata else row["start_char"],
             "end_char": None if is_metadata else row["end_char"],

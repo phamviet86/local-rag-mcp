@@ -123,6 +123,14 @@ repository. Never paste their contents into chat, issue reports, unit files, or 
 stores a token path, not its contents; source/status responses redact the token path for reader
 tools.
 
+## Optional reranker
+
+A local cross-encoder can reorder the top search candidates. It is off by default and needs no
+network once the model is cached. Install the extra (`pip install 'phamviet-local-rag-mcp[rerank]'`)
+and set `rerank_provider` to `local` in `config.json` (or `LOCAL_RAG_MCP_RERANK_PROVIDER=local`).
+`rerank_model` defaults to `BAAI/bge-reranker-v2-m3` and `rerank_top_n` to 30. `doctor` warns and
+search keeps working in its original order if the dependency or model is unavailable.
+
 ## Optional embeddings
 
 Full-text search needs no embeddings. The default `hybrid` mode falls back to full text with a

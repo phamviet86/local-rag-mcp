@@ -41,6 +41,8 @@ class PackagingMetadataTests(unittest.TestCase):
                 any(item.startswith(package) for item in project["dependencies"]),
                 f"{package} must not be installed by the base distribution",
             )
+        extras = project["optional-dependencies"]
+        self.assertEqual(extras["rerank"], extras["local-embeddings"])
         self.assertIn("Copyright 2026 phamviet86", (ROOT / "LICENSE").read_text())
         manifest = (ROOT / "MANIFEST.in").read_text()
         for included_file in ("SECURITY.md", "AGENTS.md", "CONTRIBUTING.md", ".env.example"):

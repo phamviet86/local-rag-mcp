@@ -157,7 +157,7 @@ def test_vietnamese_fts_keeps_original_text_and_vectors(tmp_path: Path):
     service.reconcile()
     for query in ("hop", "hợp", "duong", "đường", "ĐƯỜNG"):
         hit = service.search(query, mode="full_text")["results"][0]
-        assert hit["text"] == "hợp đồng đường ĐƯỜNG"
+        assert hit["text"] == "note | note.txt\nhợp đồng đường ĐƯỜNG"
     evidence = [{"path": "notes:note.txt", "quote": "hợp"}]
     service.add_metadata("notes:note.txt", "tag", "đặc biệt", evidence, "test")
     assert service.search("dac", mode="full_text")["results"]
@@ -176,7 +176,8 @@ def test_hit_offsets_and_read_around_match_effective_text(tmp_path: Path):
         if hit["chunk_ordinal"] is None:
             continue
         text = service.read(hit["stable_ref"])["text"]
-        assert text[hit["start_char"] : hit["end_char"]] == hit["text"]
+        # The stored text carries a context line; offsets point at the body.
+        assert text[hit["start_char"] : hit["end_char"]] == hit["text"].split("\n", 1)[1]
         assert hit["indexed_at"] and hit["source_modified_at"]
         expanded = MCPServer(service).call(
             "read", {"path": hit["stable_ref"], "around": hit["start_char"], "window": 150}
@@ -197,7 +198,7 @@ def test_diversify_and_collapse_keep_scoped_locations(tmp_path: Path):
     results = service.search("orchard", limit=100, mode="full_text", per_document=1)["results"]
     refs = [hit["stable_ref"] for hit in results]
     assert len(refs) == len(set(refs))
-    hashes = [hit["chunk_hash"] for hit in results if hit["chunk_hash"]]
+    hashes = [hit["body_hash"] for hit in results if hit["body_hash"]]
     assert len(hashes) == len(set(hashes))
     assert any(
         {location["path"] for location in hit.get("locations", [])} == {"one.txt", "copy.txt"}
@@ -450,9 +451,8 @@ def test_local_move_keeps_ocr_corrections_and_never_embeds(tmp_path: Path):
     assert service.db.review(review["id"])["status"] == "resolved"
     assert service.metadata("notes:new/scan.pdf")["agent"][0]["key"] == "tag"
     hit = service.search("corrected", mode="full_text")["results"][0]
-    assert (
-        service.read(hit["stable_ref"])["text"][hit["start_char"] : hit["end_char"]] == hit["text"]
-    )
+    body = service.read(hit["stable_ref"])["text"][hit["start_char"] : hit["end_char"]]
+    assert body == hit["text"].split("\n", 1)[1]
 
 
 def test_deleted_stable_reference_cannot_resolve_to_new_document(tmp_path: Path):

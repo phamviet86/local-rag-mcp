@@ -286,8 +286,15 @@ class Indexer:
         extracted, artifact = self._extract_cached(
             snapshot.path, content_hash, use_cache=not reextract
         )
-        chunks = _make_chunks(extracted, self.settings)
         automatic = _automatic_metadata(snapshot, extracted, content_hash)
+        chunks = _make_chunks(
+            extracted,
+            self.settings,
+            chunk_context(
+                str(automatic.get("title") or ""),
+                snapshot.path.relative_to(self.settings.root).as_posix(),
+            ),
+        )
         return PreparedDocument(snapshot, content_hash, extracted, artifact, chunks, automatic)
 
     def _prepare_cached_reindex(self, snapshot: FileSnapshot, current: Any) -> PreparedDocument:
@@ -299,8 +306,12 @@ class Indexer:
                 f"cached {kind} artifact is missing: {artifact}; rerun with --reextract"
             )
         extracted = _document_from_artifact(json.loads(artifact.read_text(encoding="utf-8")))
-        chunks = _make_chunks(extracted, self.settings)
         automatic = json.loads(current["metadata_json"])
+        chunks = _make_chunks(
+            extracted,
+            self.settings,
+            chunk_context(str(automatic.get("title") or ""), current["relative_path"]),
+        )
         if current["source_url"]:
             automatic.update(
                 {
@@ -489,7 +500,11 @@ class Indexer:
             content_hash,
             extracted,
             artifact_path,
-            _make_chunks(extracted, self.settings),
+            _make_chunks(
+                extracted,
+                self.settings,
+                chunk_context(str(metadata.get("title") or path.stem), relative_path),
+            ),
             metadata,
             relative_path=relative_path,
             external_id=external_id,
@@ -518,9 +533,9 @@ class Indexer:
             cite_key = make_cite_key(prefix, [chunk.cite_key or f"c{chunk.ordinal}"], taken)
             cursor = connection.execute(
                 """INSERT INTO chunks
-                   (document_id,ordinal,text,start_char,end_char,chunk_hash,provenance_json,
+                   (document_id,ordinal,text,start_char,end_char,chunk_hash,body_hash,provenance_json,
                     page_number,cite_key,section_path,page_start,page_end,ocr)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     document_id,
                     chunk.ordinal,
@@ -528,6 +543,7 @@ class Indexer:
                     chunk.start,
                     chunk.end,
                     chunk.chunk_hash,
+                    chunk.body_hash or chunk.chunk_hash,
                     json.dumps(chunk.provenance),
                     _chunk_page(chunk.provenance),
                     cite_key,
@@ -687,7 +703,11 @@ class Indexer:
         temporary.write_text(json.dumps(effective, ensure_ascii=False), encoding="utf-8")
         temporary.replace(artifact)
         extracted = _document_from_artifact(effective)
-        chunks = _make_chunks(extracted, self.settings)
+        chunks = _make_chunks(
+            extracted,
+            self.settings,
+            chunk_context(review["title"], review["relative_path"]),
+        )
         with self.db.connect() as connection:
             document_metadata = json.loads(
                 connection.execute(
@@ -857,7 +877,14 @@ def _file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _chunks(document: ExtractedDocument, size: int, overlap: int) -> list[ChunkRecord]:
+def chunk_context(title: str | None, relative_path: str | None) -> str:
+    """Context line prefixed to window chunks, in the ``a | b`` format split_markdown uses."""
+    return " | ".join(part for part in (title, relative_path) if part)
+
+
+def _chunks(
+    document: ExtractedDocument, size: int, overlap: int, context: str = ""
+) -> list[ChunkRecord]:
     chunks: list[ChunkRecord] = []
     start, length = 0, len(document.text)
     while start < length:
@@ -880,14 +907,17 @@ def _chunks(document: ExtractedDocument, size: int, overlap: int) -> list[ChunkR
                 for span in document.spans
                 if span.end > chunk_start and span.start < chunk_end
             ]
+            # start/end keep pointing at the body; only the stored text carries the context.
+            stored = f"{context}\n{text}" if context else text
             chunks.append(
                 ChunkRecord(
                     len(chunks),
-                    text,
+                    stored,
                     chunk_start,
                     chunk_end,
-                    hashlib.sha256(text.encode()).hexdigest(),
+                    hashlib.sha256(stored.encode()).hexdigest(),
                     provenance,
+                    body_hash=hashlib.sha256(text.encode()).hexdigest(),
                 )
             )
         if end >= length:
@@ -920,7 +950,9 @@ def _annotate(document: ExtractedDocument, chunk: ChunkRecord) -> ChunkRecord:
     return replace(chunk, page_start=start, page_end=end, ocr=ocr)
 
 
-def _make_chunks(document: ExtractedDocument, settings: Settings) -> list[ChunkRecord]:
+def _make_chunks(
+    document: ExtractedDocument, settings: Settings, context: str = ""
+) -> list[ChunkRecord]:
     """Structure-aware chunks when configured and the text has structure, else windows."""
     if settings.chunk_strategy == "structure":
         structured = _chunks_structured(document, settings.structure_max_chars)
@@ -928,7 +960,7 @@ def _make_chunks(document: ExtractedDocument, settings: Settings) -> list[ChunkR
             return structured
     return [
         replace(_annotate(document, chunk), cite_key=f"c{chunk.ordinal}")
-        for chunk in _chunks(document, settings.chunk_chars, settings.chunk_overlap)
+        for chunk in _chunks(document, settings.chunk_chars, settings.chunk_overlap, context)
     ]
 
 

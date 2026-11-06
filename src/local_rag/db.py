@@ -211,6 +211,11 @@ MIGRATIONS = [
     ALTER TABLE documents ADD COLUMN trashed_at TEXT;
     CREATE INDEX documents_trashed_idx ON documents(trashed_at);
     """,
+    """
+    ALTER TABLE chunks ADD COLUMN body_hash TEXT;
+    UPDATE chunks SET body_hash=chunk_hash;
+    CREATE INDEX chunks_body_hash_idx ON chunks(body_hash);
+    """,
 ]
 
 
