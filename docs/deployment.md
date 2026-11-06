@@ -241,7 +241,9 @@ items are never deleted by this project.
 
 ## Maintainer checklist for future releases
 
-Before publishing a later release, confirm the tag/version, Apache-2.0 license, clean build of wheel and sdist,
+The single workflow `.github/workflows/release.yml` reads the version from `pyproject.toml`, requires
+`docs/releases/v<version>.md` and a `[release v<version>]` marker in the main commit message, and skips
+when the tag already exists on another commit. Before publishing a later release, confirm the tag/version, Apache-2.0 license, clean build of wheel and sdist,
 distribution metadata, checksum, isolated wheel installation, `setup --no-ocr`, SQLite/FTS5,
 MCP initialize/tool list, and existing test/CI gates. Attach wheel, sdist, checksums, and concise
 release notes to the GitHub Release. Publish to PyPI only under `phamviet-local-rag-mcp` after the

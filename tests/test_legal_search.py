@@ -270,3 +270,27 @@ def test_png_encoder_round_trip() -> None:
     length = struct.unpack(">I", png[33:37])[0]
     raw = zlib.decompress(png[41 : 41 + length])
     assert raw[:7] == b"\x00\xff\x00\x00\xff\x00\x00"
+
+
+def _chunk_keys(tmp_path: Path, **settings_kwargs: object) -> list[str]:
+    home, root = tmp_path / "home", tmp_path / "docs"
+    root.mkdir()
+    (root / "nghi-dinh.txt").write_text(DECREE, encoding="utf-8")
+    settings = Settings(root=home, home=home, **settings_kwargs)  # type: ignore[arg-type]
+    settings.save()
+    assert Settings.load(home).legal_chunking is settings.legal_chunking
+    rag = MultiSourceRAG(settings)
+    rag.add_local_source("law", root)
+    rag.reconcile()
+    with rag.db.connect() as connection:
+        return [r[0] for r in connection.execute("SELECT cite_key FROM chunks")]
+
+
+def test_legal_chunking_default_splits_by_dieu(tmp_path: Path) -> None:
+    keys = _chunk_keys(tmp_path)
+    assert any("#dieu-1" in key for key in keys)
+
+
+def test_legal_chunking_off_uses_window_chunks(tmp_path: Path) -> None:
+    keys = _chunk_keys(tmp_path, legal_chunking=False)
+    assert keys and all(key.endswith(f"#c{i}") for i, key in enumerate(keys))

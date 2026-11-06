@@ -61,6 +61,7 @@ class Settings:
     chunk_chars: int = 1200
     chunk_overlap: int = 150
     chunk_strategy: str = "structure"
+    legal_chunking: bool = True
     structure_max_chars: int = 2000
     reconcile_seconds: float = 600.0
     embedding_provider: str = "none"
@@ -86,6 +87,8 @@ class Settings:
             raise ValueError("docx_document_order must be a boolean")
         if self.chunk_chars < 100 or not 0 <= self.chunk_overlap < self.chunk_chars:
             raise ValueError("invalid chunk size or overlap")
+        if not isinstance(self.legal_chunking, bool):
+            raise ValueError("legal_chunking must be a boolean")
         if self.chunk_strategy not in {"structure", "window"}:
             raise ValueError("chunk_strategy must be structure or window")
         if self.structure_max_chars < 200:
@@ -150,6 +153,7 @@ class Settings:
             "chunk_chars": self.chunk_chars,
             "chunk_overlap": self.chunk_overlap,
             "chunk_strategy": self.chunk_strategy,
+            "legal_chunking": self.legal_chunking,
             "structure_max_chars": self.structure_max_chars,
             "reconcile_seconds": self.reconcile_seconds,
             "embedding_provider": self.embedding_provider,
@@ -189,6 +193,7 @@ class Settings:
             chunk_chars=int(payload.get("chunk_chars", 1200)),
             chunk_overlap=int(payload.get("chunk_overlap", 150)),
             chunk_strategy=str(payload.get("chunk_strategy", "structure")),
+            legal_chunking=bool(payload.get("legal_chunking", True)),
             structure_max_chars=int(payload.get("structure_max_chars", 2000)),
             reconcile_seconds=float(payload.get("reconcile_seconds", 600)),
             embedding_provider=os.environ.get("LOCAL_RAG_MCP_EMBEDDING_PROVIDER")

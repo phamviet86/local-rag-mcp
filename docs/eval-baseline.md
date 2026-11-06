@@ -1,7 +1,7 @@
 # Search evaluation baseline (full-text only)
 
 - Date: 2026-11-07
-- Base commit: a69e3a4 plus the phase 5 changes (MRR/nDCG, window-chunk context prefix, migration 12); the commit hash is recorded at commit time
+- Base commit: a69e3a4 plus the phase 5 changes (MRR/nDCG, window-chunk context prefix, migration 12); phase 5 commit: 6211935, where the baseline numbers were produced
 - Mode: `--mode full_text`, `embedding_provider=none`, reranker off, `--no-ocr`. No embedding, rerank or network call was made.
 - Question set: `testdata/eval/legal-questions.jsonl` (24 questions, gold = legal cite_keys; a gold Dieu also accepts its khoan chunks).
 - Metrics: recall@k = share of questions with a gold hit in the top k; MRR@10 = mean of 1/rank of the first gold hit (0 beyond rank 10); nDCG@10 = binary DCG over all gold keys (each credited once, khoan prefix rule) divided by the ideal DCG over min(len(gold), 10) positions.

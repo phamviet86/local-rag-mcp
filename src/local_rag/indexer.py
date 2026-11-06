@@ -955,7 +955,9 @@ def _make_chunks(
 ) -> list[ChunkRecord]:
     """Structure-aware chunks when configured and the text has structure, else windows."""
     if settings.chunk_strategy == "structure":
-        structured = _chunks_structured(document, settings.structure_max_chars)
+        structured = _chunks_structured(
+            document, settings.structure_max_chars, settings.legal_chunking
+        )
         if structured:
             return structured
     return [
@@ -964,7 +966,9 @@ def _make_chunks(
     ]
 
 
-def _chunks_structured(document: ExtractedDocument, max_chars: int) -> list[ChunkRecord]:
+def _chunks_structured(
+    document: ExtractedDocument, max_chars: int, legal: bool = True
+) -> list[ChunkRecord]:
     """One chunk per Điều (or Markdown section); cite_key holds the suffix after ``#``."""
     doc_no = detect_doc_no(document)
     first = next((s for s in document.spans if s.kind == "pdf_page"), None)
@@ -973,8 +977,10 @@ def _chunks_structured(document: ExtractedDocument, max_chars: int) -> list[Chun
     sections: list[Section]
     if document.media_type == "text/markdown":
         sections = split_markdown(document.text, doc_no, name)
-    else:
+    elif legal:
         sections = split_sections(document.text, doc_no, name, max_chars)
+    else:
+        return []
     chunks: list[ChunkRecord] = []
     for section in sections:
         provenance = [

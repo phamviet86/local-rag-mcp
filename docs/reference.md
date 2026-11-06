@@ -146,7 +146,11 @@ Each hit carries `cite_key` (`<số hiệu>#dieu-5-khoan-2`, or `<stable_ref>#c<
 `page_start`/`page_end`, `section_path`, `doc_no`, and `ocr`. OCR hits add `ocr_notice`: open the
 original page before quoting. Rows indexed before this change have no `cite_key` until
 `reindex --reextract`, which also changes chunk hashes so embeddings are recomputed. `chunk_strategy`
-(`structure` or `window`) and `structure_max_chars` are settings in `config.json`.
+(`structure` or `window`), `structure_max_chars` and `legal_chunking` (default `true`) are settings in
+`config.json`. With `legal_chunking: false`, the Vietnamese legal splitter (Điều/khoản) is skipped:
+Markdown still splits by heading and every other file uses window chunks. Chunks are rebuilt from
+the cached extraction, so run `reindex` (add `--reextract` to also refresh the extraction) after
+changing it.
 `eval` reads JSONL lines `{id, question, gold:[cite_key], type, diacritics}`; a gold Điều also accepts
 its khoản chunks.
 
@@ -228,7 +232,10 @@ local-rag-mcp relationship report.md appendix.xlsx supports \
 
 ## MCP profiles and tools
 
-The server uses the official Python MCP SDK over stdio. Select the narrowest profile:
+The server uses the official Python MCP SDK over stdio. Select the narrowest profile. Profiles scope
+the tools a process exposes; they are not authentication. For a single user driving the server over
+SSH (see [deployment-vps.md](deployment-vps.md)), `LOCAL_RAG_MCP_PROFILE=admin` is the recommended
+setting; use `reader` for ordinary retrieval clients.
 
 ```bash
 LOCAL_RAG_MCP_PROFILE=reader local-rag-mcp-server

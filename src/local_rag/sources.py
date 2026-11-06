@@ -199,6 +199,7 @@ def source_settings(base: Settings, source: SourceRecord) -> Settings:
         chunk_chars=base.chunk_chars,
         chunk_overlap=base.chunk_overlap,
         chunk_strategy=base.chunk_strategy,
+        legal_chunking=base.legal_chunking,
         structure_max_chars=base.structure_max_chars,
         reconcile_seconds=base.reconcile_seconds,
         embedding_provider=base.embedding_provider,

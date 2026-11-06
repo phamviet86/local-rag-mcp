@@ -38,7 +38,9 @@ codex mcp add local-rag-mcp \
 
 The configured executable must be an absolute path belonging to the intended isolated environment.
 Profiles expose capabilities only; they are not authentication or a sandbox. Give `reviewer` and
-`admin` only to trusted local processes with operator approval.
+`admin` only to trusted local processes with operator approval. For a single user operating the
+service over SSH, use `LOCAL_RAG_MCP_PROFILE=admin` (see
+[deployment-vps.md](deployment-vps.md)); profiles limit tool scope, they do not authenticate anyone.
 
 ## Retrieval sequence
 

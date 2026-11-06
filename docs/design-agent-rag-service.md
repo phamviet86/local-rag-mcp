@@ -3,6 +3,18 @@
 Trạng thái: bản phác thảo để thảo luận (2026-11-06). Chưa có mã nào được thay đổi theo tài liệu này.
 Mọi tham chiếu `file:dòng` là theo commit `ad5a5bd`.
 
+## Trạng thái triển khai (2026-11-07)
+
+Đã làm trên nhánh `feat/agent-rag-service` (chi tiết trong `CHANGELOG.md`, mục `[Unreleased]`):
+daemon `serve` làm executor và heartbeat, lịch đồng bộ theo source, `refresh`, độ mới dữ liệu,
+service account và Google Docs xuất Markdown, phân biệt thùng rác với xoá hẳn, `list_documents`,
+giới hạn `read`, hướng dẫn VPS qua SSH, reranker tuỳ chọn, MRR/nDCG và baseline eval, tiền tố ngữ
+cảnh cho chunk cửa sổ, định dạng HTML/CSV/JSON/EPUB/ODF, ảnh trang PDF cho Drive, cờ bố cục, gộp
+workflow release, deprecate alias `local-rag`, setting `legal_chunking`.
+
+Chưa làm (hoãn): HTTP công khai/OAuth, Docling, log truy vấn, xử lý bảng tính chuyên biệt, và thử
+thực tế Drive/VPS (người dùng tự kiểm theo `docs/deployment-vps.md` và `docs/setup.md`).
+
 ## 1. Mục tiêu
 
 | # | Mong muốn | Tóm tắt hiện trạng |

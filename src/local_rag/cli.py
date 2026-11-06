@@ -565,6 +565,11 @@ def entrypoint(argv: Sequence[str] | None = None) -> int:
 
 
 def legacy_entrypoint(argv: Sequence[str] | None = None) -> int:
+    print(
+        "warning: 'local-rag' is deprecated and will be removed in the next minor release; "
+        "use 'local-rag-mcp'",
+        file=sys.stderr,
+    )
     return entrypoint(argv)
 
 

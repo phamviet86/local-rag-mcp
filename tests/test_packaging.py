@@ -50,5 +50,24 @@ class PackagingMetadataTests(unittest.TestCase):
             self.assertIn(included_file, manifest)
 
 
+class LegacyEntrypointTests(unittest.TestCase):
+    def test_local_rag_alias_warns_on_stderr_and_still_runs(self) -> None:
+        import contextlib
+        import io
+
+        from local_rag.cli import legacy_entrypoint
+
+        err = io.StringIO()
+        with (
+            contextlib.redirect_stderr(err),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            legacy_entrypoint(["--help"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("'local-rag' is deprecated", err.getvalue())
+        self.assertIn("next minor release", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

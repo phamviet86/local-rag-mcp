@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+- Merge the four per-version release workflows into `.github/workflows/release.yml`: it derives the
+  version from `pyproject.toml`, requires `docs/releases/v<version>.md` and the `[release
+  v<version>]` commit marker, skips cleanly when the tag already exists on another commit, and keeps
+  the existing verified-draft publish steps.
+- The `local-rag` alias now prints a deprecation warning to stderr and will be removed in the next
+  minor release; use `local-rag-mcp`.
+- Add the `legal_chunking` setting (default `true`). When `false`, the Điều/khoản splitter is skipped:
+  Markdown splits by heading and other files use window chunks with the context prefix. Run `reindex`
+  (optionally `--reextract`) after changing it; chunks are rebuilt from the cached extraction.
+- Docs: for a single user over SSH use `LOCAL_RAG_MCP_PROFILE=admin`; profiles are tool scope, not
+  authentication. Mark implemented items in the agent RAG service design.
+
 - Index HTML/HTM, CSV, JSON, EPUB and ODT/ODS/ODP files (standard library only) locally and from
   Drive (new MIME types). Locators: `block:N`, `row:N`, JSON paths, `chapter:N`,
   `paragraph:N`/`sheet:S/row:N`/`slide:N`. A saved extension list equal to the old default adopts
