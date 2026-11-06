@@ -36,6 +36,7 @@ local-rag-mcp source list
 local-rag-mcp source add-local engineering /srv/engineering --exclude archive
 local-rag-mcp source enable engineering
 local-rag-mcp source disable engineering
+local-rag-mcp source set engineering --poll-seconds 300 --full-reconcile-seconds 43200
 local-rag-mcp source remove engineering --yes
 ```
 
@@ -99,6 +100,15 @@ Normal local reconciliation uses size and modification time as its unchanged fas
 candidates. Targets are relative file or folder paths within a source. Partial Drive rebuilds do not
 advance the source-wide changes cursor. A matching hash rebuilds chunks/FTS from the cached effective
 artifact without rerunning extraction or OCR; `--reextract` explicitly opts into that work.
+
+The `serve` daemon schedules each enabled source on its own timer, stored in the source config:
+`poll_seconds` (default 300 for Drive, `reconcile_seconds` = 600 for local; minimum 60) and
+`full_reconcile_seconds` (default 43200; Drive only, local reconciles always walk the tree). When a
+source is due and no job is active, the daemon enqueues `reconcile(source)` (or `full` when the full
+interval has elapsed since `last_full_reconcile_at`) and runs it itself. Sources added while the
+daemon runs are scheduled on the next check; file watchers for new local sources need a daemon
+restart. `local-rag-mcp refresh [--source NAME]` queues one rate-limited incremental reconcile
+(60 seconds per source).
 
 Native Watchdog observers coalesce writes for enabled local roots. Optional periodic reconciliation
 also syncs Drive and recovers missed filesystem/change events. Manual CLI and MCP indexing do not
@@ -222,7 +232,7 @@ LOCAL_RAG_MCP_PROFILE=reviewer local-rag-mcp-server
 LOCAL_RAG_MCP_PROFILE=admin local-rag-mcp-server
 ```
 
-- `reader`: `search`, `read`, `get_chunk`, `get_page_image`, `check_status`, `status`, `doctor`, `index_status`, `job_status`, `sources`,
+- `reader`: `search`, `read`, `get_chunk`, `get_page_image`, `check_status`, `status`, `doctor`, `index_status`, `job_status`, `refresh`, `sources`,
   `metadata`, and `reviews`.
 - `reviewer`: reader tools plus page correction/review resolution and evidence-backed metadata and
   relationships.

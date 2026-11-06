@@ -205,8 +205,8 @@ local-rag-mcp --home "$DATA_ROOT" service uninstall
 ```
 
 The service is a macOS LaunchAgent or Linux systemd user service. It watches enabled local roots and
-reconciles enabled sources every 600 seconds by default. Generated service definitions deliberately
-do not copy OAuth tokens or remote embedding API keys. If remote embeddings are required, the
+reconciles each enabled source on its own `poll_seconds` timer (Drive 300, local 600 by default;
+see `local-rag-mcp source set`). Generated service definitions deliberately do not copy OAuth tokens or remote embedding API keys. If remote embeddings are required, the
 operator must supply them through a protected platform mechanism (or the protected JSON
 file above); otherwise full-text indexing remains supported. A normal setup does not opt into this
 service.

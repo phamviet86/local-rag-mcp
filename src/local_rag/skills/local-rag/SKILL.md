@@ -36,7 +36,11 @@ claiming the entire index is unusable. Missing OCR affects OCR-routed PDF pages 
 other formats remain usable. `no_enabled_sources` is an initialized empty state requiring a chosen
 source, not a crashed MCP server.
 
-The default `reader` profile does not mutate. Existing indexing jobs can be observed with
+The default `reader` profile does not mutate, except `refresh`, which only queues one incremental
+reconcile (never full or reindex; at most once per 60 seconds per source, otherwise
+`rate_limited` with `retry_after_seconds`). Use it when `sources`/`status` show a stale
+`last_synced_at` or `doctor` reports a source `stale`, and tell the user the data may be out of date.
+Existing indexing jobs can be observed with
 `index_status`/`job_status`; search reads committed state while they run. Reviewer corrections require
 evidence and actor identity. Admin/source changes, reindexing, and background-service operations
 belong to the operator-authorized setup workflow; do not trigger them merely because retrieval is poor.

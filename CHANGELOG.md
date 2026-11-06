@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+- Per-source sync schedule: `source set NAME --poll-seconds N --full-reconcile-seconds N` stores
+  `poll_seconds` (Drive 300, local 600, minimum 60) and `full_reconcile_seconds` (43200) in the
+  source config. The `serve` daemon replaces its global `reconcile_seconds` timer with a scheduler
+  that enqueues `reconcile(source)` (and a Drive `full` reconcile, tracked in
+  `last_full_reconcile_at`) only when no job is active.
+- Add the reader MCP tool and CLI `refresh [--source NAME]`: it only enqueues an incremental
+  reconcile, at most once per 60 seconds per source (`rate_limited` with `retry_after_seconds`),
+  and returns the job with its `executor`.
+- Add data freshness: `sources`, `status` and `search.coverage.freshness` report `last_synced_at`,
+  `last_attempt_at`, `next_sync_at` and `poll_seconds` (`last_synced_at` is the last successful
+  sync, stored in `source_sync_state` key `last_success_at`, no migration); `doctor` warns `stale`
+  when a source has had no successful sync for 3 x `poll_seconds`.
 - The `serve` daemon is now the job executor: it publishes a heartbeat (migration 10,
   `daemon_heartbeat`, every 10 seconds) and runs `queued` index jobs left by other processes. When a
   daemon is alive, MCP/CLI `start_index_job` callers only enqueue and report `"executor": "daemon"`

@@ -72,6 +72,14 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     for name in ("enable", "disable"):
         subcommand = source_commands.add_parser(name)
         subcommand.add_argument("source")
+    set_schedule = source_commands.add_parser(
+        "set", help="set per-source poll and full-reconcile intervals"
+    )
+    set_schedule.add_argument("source")
+    set_schedule.add_argument("--poll-seconds", type=float, help="incremental poll (min 60)")
+    set_schedule.add_argument(
+        "--full-reconcile-seconds", type=float, help="Drive authoritative scan interval (min 60)"
+    )
     relocate = source_commands.add_parser("relocate")
     relocate.add_argument("source")
     relocate.add_argument("new_path", type=Path)
@@ -89,6 +97,10 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
             "--background", action="store_true", help="queue and return a job ID"
         )
         execution.add_argument("--wait", action="store_true", help="wait for completion (default)")
+    refresh = commands.add_parser(
+        "refresh", help="queue one rate-limited incremental reconcile (never full or reindex)"
+    )
+    refresh.add_argument("--source")
     reindex = commands.add_parser(
         "reindex", aliases=["rebuild"], help="rebuild file/folder/source/all index state"
     )
@@ -323,6 +335,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 background=False,
                 defer_to_daemon=False,
             )
+        elif args.source_command == "set":
+            try:
+                output = service.set_source_schedule(
+                    args.source, args.poll_seconds, args.full_reconcile_seconds
+                )
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from exc
         elif args.source_command in {"enable", "disable"}:
             output = service.enable_source(args.source, args.source_command == "enable")
         else:
@@ -336,6 +355,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = job
         else:
             output = service.run_enqueued_job(job, defer_to_daemon=False)
+    elif command == "refresh":
+        output = service.refresh(args.source, background=False)
     elif command in {"reindex", "rebuild"}:
         if not args.all and not args.source and not args.target:
             raise SystemExit("reindex requires --all, --source, or --target")

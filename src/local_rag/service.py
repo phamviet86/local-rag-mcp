@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -18,10 +19,19 @@ from .embeddings import (
 )
 from .extract import Extractor
 from .indexer import Indexer
-from .jobs import IndexJobManager, daemon_alive, daemon_info
+from .jobs import IndexJobManager, daemon_alive, daemon_info, iso_z, parse_utc
 from .ocr_runtime import OCRRuntimeManager
 from .search import SearchEngine
-from .sources import SourceRecord, SourceRegistry, source_settings
+from .sources import (
+    LAST_FULL_KEY,
+    SourceRecord,
+    SourceRegistry,
+    freshness,
+    source_settings,
+)
+
+REFRESH_MIN_INTERVAL_SECONDS = 60.0
+STALE_POLL_MULTIPLE = 3
 
 
 def _readiness_error(code: str, message: str, *commands: str) -> dict[str, Any]:
@@ -234,9 +244,11 @@ class MultiSourceRAG:
         settings: Settings,
         embeddings: EmbeddingProvider | None = None,
         drive_backend_factory: Callable[[SourceRecord], Any] | None = None,
+        clock: Callable[[], datetime] | None = None,
     ):
         settings.initialize_layout()
         self.settings = settings
+        self.clock: Callable[[], datetime] = clock or (lambda: datetime.now(UTC))
         self.db = Database(settings.database)
         self.db.migrate()
         self.registry = SourceRegistry(settings, self.db)
@@ -318,6 +330,70 @@ class MultiSourceRAG:
                 "local-rag-mcp source add-drive NAME ROOT_ID --account LABEL --token-file FILE",
             )
         return result
+
+    def set_source_schedule(
+        self,
+        value: str,
+        poll_seconds: float | None = None,
+        full_reconcile_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        record = self.registry.set_schedule(value, poll_seconds, full_reconcile_seconds)
+        return self.registry.public(record)
+
+    def source_freshness(self, source: str | None = None) -> list[dict[str, Any]]:
+        """Per-enabled-source sync freshness; ``source`` restricts to one id or name."""
+        return [
+            {"source": record.name, "source_id": record.id, **freshness(self.settings, record)}
+            for record in self.registry.list(enabled=True)
+            if not source or source in {record.id, record.name}
+        ]
+
+    def refresh(self, source: str | None = None, *, background: bool = True) -> dict[str, Any]:
+        """Enqueue one incremental reconcile (no full scan, no reindex), rate limited per source.
+
+        Without ``source`` one global reconcile job is queued and the limit is taken from the
+        newest reconcile job of any source. The job runs in the serve daemon when one is alive,
+        otherwise in this process.
+        """
+        if source:
+            record = self.registry.get(source)
+            if not record.enabled:
+                raise ValueError(f"source is disabled: {record.name}")
+            scope: list[str] | None = [record.id, record.name]
+            name: str | None = record.name
+        else:
+            if not self.registry.list(enabled=True):
+                return {
+                    "state": "unavailable",
+                    "error": _readiness_error(
+                        "no_enabled_sources",
+                        "No enabled source can be refreshed.",
+                        "local-rag-mcp source list",
+                        "local-rag-mcp source add-local NAME FOLDER",
+                    ),
+                }
+            scope, name = None, None
+        latest = self.jobs.latest_reconcile(scope)
+        if latest is not None:
+            elapsed = (self.clock() - parse_utc(latest["created_at"])).total_seconds()
+            if 0 <= elapsed < REFRESH_MIN_INTERVAL_SECONDS:
+                if latest["state"] in {"queued", "running"} and (
+                    latest["source"] == name or (name and latest["source"] is None)
+                ):
+                    job = self.jobs.status(latest["id"], reader=True)
+                    return {"state": job["state"], "coalesced": True, "job": job}
+                return {
+                    "state": "rate_limited",
+                    "retry_after_seconds": max(
+                        1, int(REFRESH_MIN_INTERVAL_SECONDS - elapsed + 0.999)
+                    ),
+                }
+        started = self.start_index_job("reconcile", name, background=background)
+        job = self.jobs.status(str(started["id"]), reader=True)
+        job["executor"] = started.get("executor")
+        if started.get("coalesced"):
+            job["coalesced"] = True
+        return {"state": job["state"], "job": job}
 
     def enable_source(self, value: str, enabled: bool) -> dict[str, Any]:
         return self.registry.public(self.registry.enable(value, enabled))
@@ -483,6 +559,15 @@ class MultiSourceRAG:
                         )
                     finally:
                         backend.close()
+                if (
+                    report.get("mode") == "full"
+                    and not report.get("errors")
+                    and not target
+                    and record.kind == "google_drive"
+                ):
+                    self.db.set_sync_state(
+                        record.id, LAST_FULL_KEY, self.clock().strftime("%Y-%m-%dT%H:%M:%SZ")
+                    )
                 reports.append(report)
             except Exception as exc:
                 if record.kind == "google_drive":
@@ -564,7 +649,9 @@ class MultiSourceRAG:
         from .coverage import index_coverage
 
         normalized = self.search_engine._relative_scope(folder)
-        return index_coverage(self.db, source, normalized, offset, limit)
+        result = index_coverage(self.db, source, normalized, offset, limit)
+        result["freshness"] = self.source_freshness(source)
+        return result
 
     def read(
         self,
@@ -801,19 +888,49 @@ class MultiSourceRAG:
         if review_total:
             actions.append({"command": "local-rag-mcp review list"})
         sync_errors = [str(row["name"]) for row in sync_rows if row["last_error"]]
-        checks["sync"] = {
-            "status": "error" if sync_errors else ("ok" if sync_rows else "warning"),
-            "sources_with_errors": sync_errors,
-            "sources": [
+        now = self.clock()
+        records = {record.name: record for record in enabled}
+        stale_sources: list[str] = []
+        sync_sources: list[dict[str, Any]] = []
+        for row in sync_rows:
+            record = records[str(row["name"])]
+            fresh = freshness(self.settings, record)
+            # Reference is the last successful sync; a never-synced source ages from creation.
+            reference = iso_z(record.last_success_at) or iso_z(record.created_at)
+            is_stale = (
+                reference is not None
+                and (now - parse_utc(reference)).total_seconds()
+                > STALE_POLL_MULTIPLE * fresh["poll_seconds"]
+            )
+            if is_stale:
+                stale_sources.append(record.name)
+                actions.append({"command": f"local-rag-mcp refresh --source {record.name}"})
+            sync_sources.append(
                 {
                     "name": row["name"],
                     "kind": row["kind"],
-                    "last_sync_at": row["last_sync_at"],
+                    "last_sync_at": iso_z(row["last_sync_at"]),
                     "error": row["last_error"],
+                    **fresh,
+                    "stale": is_stale,
                 }
-                for row in sync_rows
-            ],
-            "message": "sync errors detected" if sync_errors else "no recorded sync errors",
+            )
+        checks["sync"] = {
+            "status": "error"
+            if sync_errors
+            else ("warning" if stale_sources or not sync_rows else "ok"),
+            "sources_with_errors": sync_errors,
+            "stale_sources": stale_sources,
+            "sources": sync_sources,
+            "message": (
+                "sync errors detected"
+                if sync_errors
+                else (
+                    "stale: no sync within 3 x poll_seconds"
+                    if stale_sources
+                    else "no recorded sync errors"
+                )
+            ),
         }
         daemon = daemon_info(self.db) if database_ok else None
         if daemon is not None:

@@ -95,9 +95,24 @@ paths outside the configured local service.
 
 ## Mutations and reviews
 
-Reader tools do not mutate state. Reviewer actions require evidence plus actor identity. Admin
+Reader tools do not mutate state, except `refresh`, which only enqueues an incremental reconcile.
+Reviewer actions require evidence plus actor identity. Admin
 actions can enqueue/reconcile/reindex and manage source lifecycle; source removal only purges derived
 local state and never authoritative source files.
+
+`refresh(source?)` queues one incremental reconcile (never full, never reindex) and returns the
+`job` (`id`, `state`, `executor`: `daemon` or `this_process`). It is limited to once per 60 seconds
+per source, measured from the newest reconcile job for that source. Without `source`, one global
+reconcile is queued and the limit is taken from the newest reconcile job of any source, so a recent
+sync of one source also rate-limits a global refresh. Inside the window it returns
+`{"state":"rate_limited","retry_after_seconds":N}`. An identical active job is returned with
+`coalesced: true`. Poll `job_status` for the outcome.
+
+Every source in `sources`, `status` and `search.coverage.freshness` carries `last_synced_at` (last
+successful sync), `last_attempt_at`, `next_sync_at` and `poll_seconds` (UTC ISO 8601 `Z`). `doctor`
+marks a source `stale` when it has had no successful sync (falling back to its creation time) for
+more than 3 x `poll_seconds`; tell the user results may be out of date and, if
+useful, call `refresh`.
 
 Index writes use a durable single-writer queue. Reader tools can inspect job/index status and search
 committed state while work runs. Admin agents should poll `job_status`; duplicate active work may

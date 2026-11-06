@@ -20,9 +20,13 @@ OAuth tokens, API keys, or client-secret contents. Missing OCR and embeddings ar
 modes: OCR-routed PDF pages enter review, while FTS remains available without vectors. Source removal
 purges only derived local state and must never touch authoritative files.
 
-Index mutations use the durable job queue. Reader progress may expose source names and aggregate
-counts but must not expose target filenames or detailed file errors. The optional OS user service is
-operator-managed and must never be installed implicitly by setup or an agent. See
+Reader tools do not mutate state, except `refresh`, which only enqueues an incremental reconcile
+(never full or reindex; at most once per 60 seconds per source). Each source reports
+`last_synced_at` (last success), `last_attempt_at`, `next_sync_at` and `poll_seconds`; disclose
+stale data when `doctor` flags a source `stale`. Index mutations use the durable job queue. Reader
+progress may expose source names and aggregate counts but must not expose target filenames or
+detailed file errors. The optional OS user service is operator-managed and must never be installed
+implicitly by setup or an agent. See
 [docs/agents.md](docs/agents.md) for the retrieval and capability workflow.
 
 For a coding checkout, use the isolated development bootstrap and change-validation sequence in

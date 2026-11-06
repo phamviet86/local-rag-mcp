@@ -5,7 +5,7 @@ import socket
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -20,6 +20,24 @@ _ISO_Z = "%Y-%m-%dT%H:%M:%SZ"
 
 def _utc_text(moment: datetime) -> str:
     return moment.astimezone(UTC).strftime(_ISO_Z)
+
+
+def parse_utc(value: str) -> datetime:
+    """Parse SQLite CURRENT_TIMESTAMP text or a UTC ISO 8601 'Z' string into an aware datetime."""
+    text = str(value).strip()
+    if text.endswith("Z"):
+        return datetime.strptime(text, _ISO_Z).replace(tzinfo=UTC)
+    return datetime.strptime(text[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+
+
+def iso_z(value: str | None) -> str | None:
+    """Normalise a stored UTC timestamp to ISO 8601 with a 'Z' suffix (None stays None)."""
+    if not value:
+        return None
+    try:
+        return _utc_text(parse_utc(value))
+    except ValueError:
+        return None
 
 
 def write_daemon_heartbeat(
@@ -183,6 +201,27 @@ class IndexJobManager:
                    ORDER BY created_at,id LIMIT 1"""
             ).fetchone()
         return str(row["id"]) if row is not None else None
+
+    def latest_reconcile(self, names: Sequence[str] | None = None) -> dict[str, Any] | None:
+        """Newest non-rejected whole-source reconcile job, as ``{id,source,state,created_at}``.
+
+        With ``names`` only jobs for those sources (or for every source) count; with None any
+        source counts. File-event jobs (those with a target) are ignored.
+        """
+        sql = (
+            "SELECT id,source,state,created_at FROM index_jobs "
+            "WHERE kind='reconcile' AND state!='rejected' AND target IS NULL"
+        )
+        values: list[str] = []
+        if names is not None:
+            placeholders = ",".join("?" for _ in names)
+            sql += f" AND (source IS NULL OR source IN ({placeholders}))"
+            values.extend(names)
+        with self.db.connect() as connection:
+            row = connection.execute(
+                sql + " ORDER BY created_at DESC,id DESC LIMIT 1", values
+            ).fetchone()
+        return None if row is None else dict(row)
 
     def run(
         self,

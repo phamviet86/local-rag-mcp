@@ -1,11 +1,57 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from .config import Settings
 from .db import Database
+from .jobs import iso_z, parse_utc
+
+MIN_POLL_SECONDS = 60.0
+DEFAULT_DRIVE_POLL_SECONDS = 300.0
+DEFAULT_LOCAL_POLL_SECONDS = 600.0
+DEFAULT_FULL_RECONCILE_SECONDS = 43200.0
+LAST_FULL_KEY = "last_full_reconcile_at"
+
+
+def poll_seconds(settings: Settings, source: SourceRecord) -> float:
+    """Effective poll interval: source config, else Drive 300 s / local reconcile_seconds."""
+    configured = source.config.get("poll_seconds")
+    if configured is None:
+        configured = (
+            DEFAULT_DRIVE_POLL_SECONDS
+            if source.kind == "google_drive"
+            else (settings.reconcile_seconds or DEFAULT_LOCAL_POLL_SECONDS)
+        )
+    return max(MIN_POLL_SECONDS, float(configured))
+
+
+def full_reconcile_seconds(source: SourceRecord) -> float:
+    configured = source.config.get("full_reconcile_seconds", DEFAULT_FULL_RECONCILE_SECONDS)
+    return max(MIN_POLL_SECONDS, float(configured))
+
+
+def freshness(settings: Settings, source: SourceRecord) -> dict[str, Any]:
+    """Reader-safe sync freshness: UTC ISO 'Z' timestamps and the effective poll interval.
+
+    ``last_synced_at`` is the last successful sync; ``last_attempt_at`` the last attempt (which
+    may have failed) and the basis of ``next_sync_at``.
+    """
+    poll = poll_seconds(settings, source)
+    attempt = iso_z(source.last_sync_at)
+    next_at = None
+    if attempt is not None:
+        next_at = iso_z(
+            (parse_utc(attempt) + timedelta(seconds=poll)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+    return {
+        "last_synced_at": iso_z(source.last_success_at),
+        "last_attempt_at": attempt,
+        "next_sync_at": next_at,
+        "poll_seconds": poll,
+    }
 
 
 @dataclass(frozen=True)
@@ -19,6 +65,9 @@ class SourceRecord:
     config: dict[str, Any]
     cursor: str | None = None
     last_error: str | None = None
+    last_sync_at: str | None = None
+    created_at: str | None = None
+    last_success_at: str | None = None
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> SourceRecord:
@@ -32,6 +81,9 @@ class SourceRecord:
             dict(value.get("config", {})),
             value.get("cursor"),
             value.get("last_error"),
+            value.get("last_sync_at"),
+            value.get("created_at"),
+            value.get("last_success_at"),
         )
 
 
@@ -86,6 +138,25 @@ class SourceRegistry:
     def enable(self, value: str, enabled: bool) -> SourceRecord:
         return SourceRecord.from_dict(self.db.set_source_enabled(value, enabled))
 
+    def set_schedule(
+        self,
+        value: str,
+        poll: float | None = None,
+        full_reconcile: float | None = None,
+    ) -> SourceRecord:
+        changes: dict[str, Any] = {}
+        if poll is not None:
+            if poll < MIN_POLL_SECONDS:
+                raise ValueError(f"poll_seconds must be at least {int(MIN_POLL_SECONDS)}")
+            changes["poll_seconds"] = poll
+        if full_reconcile is not None:
+            if full_reconcile < MIN_POLL_SECONDS:
+                raise ValueError(f"full_reconcile_seconds must be at least {int(MIN_POLL_SECONDS)}")
+            changes["full_reconcile_seconds"] = full_reconcile
+        if not changes:
+            raise ValueError("provide poll_seconds and/or full_reconcile_seconds")
+        return SourceRecord.from_dict(self.db.update_source_config(value, changes))
+
     def public(self, source: SourceRecord) -> dict[str, Any]:
         config = dict(source.config)
         token_configured = bool(config.pop("token_file", ""))
@@ -99,6 +170,8 @@ class SourceRegistry:
             "config": config,
             "token_configured": token_configured,
             "cursor_configured": bool(source.cursor),
+            **freshness(self.settings, source),
+            "full_reconcile_seconds": full_reconcile_seconds(source),
         }
 
 

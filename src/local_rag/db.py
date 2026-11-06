@@ -9,6 +9,7 @@ import unicodedata
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -375,20 +376,20 @@ class Database:
     def source(self, value: str) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM sources WHERE id=? OR name=?", (value, value)
+                f"{_SOURCE_SELECT} WHERE s.id=? OR s.name=?", (value, value)
             ).fetchone()
         if row is None:
             raise ValueError(f"source not found: {value}")
-        return _row_json(row, ("config_json",))
+        return _source_json(row)
 
     def sources(self, enabled: bool | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
-            sql, values = "SELECT * FROM sources", []
+            sql, values = _SOURCE_SELECT, []
             if enabled is not None:
-                sql += " WHERE enabled=?"
+                sql += " WHERE s.enabled=?"
                 values.append(int(enabled))
-            rows = connection.execute(sql + " ORDER BY name", values).fetchall()
-        return [_row_json(row, ("config_json",)) for row in rows]
+            rows = connection.execute(sql + " ORDER BY s.name", values).fetchall()
+        return [_source_json(row) for row in rows]
 
     def set_source_enabled(self, value: str, enabled: bool) -> dict[str, Any]:
         source = self.source(value)
@@ -399,6 +400,39 @@ class Database:
             )
         return self.source(source["id"])
 
+    def update_source_config(self, value: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """Merge ``changes`` into one source's config_json (a None value removes the key)."""
+        source = self.source(value)
+        config = dict(source["config"])
+        for key, item in changes.items():
+            if item is None:
+                config.pop(key, None)
+            else:
+                config[key] = item
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE sources SET config_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (json.dumps(config), source["id"]),
+            )
+        return self.source(source["id"])
+
+    def sync_state(self, source_id: str, key: str) -> Any | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT value_json FROM source_sync_state WHERE source_id=? AND key=?",
+                (source_id, key),
+            ).fetchone()
+        return None if row is None else json.loads(row[0])
+
+    def set_sync_state(self, source_id: str, key: str, value: Any) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO source_sync_state(source_id,key,value_json) VALUES(?,?,?)
+                   ON CONFLICT(source_id,key) DO UPDATE SET value_json=excluded.value_json,
+                   updated_at=CURRENT_TIMESTAMP""",
+                (source_id, key, json.dumps(value)),
+            )
+
     def update_source_sync(
         self, source_id: str, cursor: str | None, error: str | None = None
     ) -> None:
@@ -408,6 +442,17 @@ class Database:
                    updated_at=CURRENT_TIMESTAMP WHERE id=?""",
                 (cursor, error, source_id),
             )
+            if error is None:
+                connection.execute(
+                    """INSERT INTO source_sync_state(source_id,key,value_json) VALUES(?,?,?)
+                       ON CONFLICT(source_id,key) DO UPDATE SET value_json=excluded.value_json,
+                       updated_at=CURRENT_TIMESTAMP""",
+                    (
+                        source_id,
+                        SUCCESS_KEY,
+                        json.dumps(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")),
+                    ),
+                )
 
     def purge_source(self, value: str) -> dict[str, Any]:
         source = self.source(value)
@@ -678,6 +723,20 @@ class Database:
                     raise
                 source, path = reference.split(":", 1)
                 self.resolve_document(path, source)
+
+
+SUCCESS_KEY = "last_success_at"
+_SOURCE_SELECT = (
+    "SELECT s.*, (SELECT value_json FROM source_sync_state "
+    f"WHERE source_id=s.id AND key='{SUCCESS_KEY}') AS last_success_json FROM sources s"
+)
+
+
+def _source_json(row: sqlite3.Row) -> dict[str, Any]:
+    result = _row_json(row, ("config_json",))
+    raw = result.pop("last_success_json", None)
+    result["last_success_at"] = json.loads(raw) if raw else None
+    return result
 
 
 def _row_json(row: sqlite3.Row, json_fields: Sequence[str]) -> dict[str, Any]:

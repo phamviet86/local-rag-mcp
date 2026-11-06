@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ from watchdog.observers import Observer
 from .config import Settings
 from .indexer import Indexer
 from .jobs import write_daemon_heartbeat
+from .scheduler import SyncScheduler
 from .service import LocalRAG, MultiSourceRAG
 from .sources import SourceRecord
 
@@ -188,8 +190,12 @@ class MultiSourceWatchService:
     RETRY_SECONDS = 1.0
     LOG_THROTTLE_SECONDS = 60.0
 
-    def __init__(self, service: MultiSourceRAG):
+    SCHEDULE_CHECK_SECONDS = 5.0
+
+    def __init__(self, service: MultiSourceRAG, clock: Callable[[], datetime] | None = None):
         self.service = service
+        self.scheduler = SyncScheduler(service, clock)
+        self._last_schedule_check: float | None = None
         self.observer = Observer()
         self.handlers: list[tuple[SourceRecord, CoalescingEventHandler]] = []
         self.stop_event = threading.Event()
@@ -222,15 +228,9 @@ class MultiSourceWatchService:
         heartbeat_thread.start()
         self.service.start_index_job("reconcile", background=False, defer_to_daemon=False)
         self.observer.start()
-        last_reconcile = time.monotonic()
         try:
             while not self.stop_event.wait(0.1):
                 self.tick()
-                if time.monotonic() - last_reconcile >= self.service.settings.reconcile_seconds:
-                    self.service.start_index_job(
-                        "reconcile", background=False, defer_to_daemon=False
-                    )
-                    last_reconcile = time.monotonic()
         finally:
             for source, handler in self.handlers:
                 self._flush_source(source, handler, force=True)
@@ -261,6 +261,19 @@ class MultiSourceWatchService:
             return
         for source, handler in self.handlers:
             self._flush_source(source, handler, now=now)
+        self._schedule(now)
+
+    def _schedule(self, now: float | None = None) -> None:
+        """Enqueue the next due per-source reconcile; the following tick claims it."""
+        moment = time.monotonic() if now is None else now
+        last = self._last_schedule_check
+        if last is not None and 0 <= moment - last < self.SCHEDULE_CHECK_SECONDS:
+            return
+        self._last_schedule_check = moment
+        try:
+            self.scheduler.run_once()
+        except Exception as exc:
+            self._log_tick_error(exc, now)
 
     def stop(self) -> None:
         self.stop_event.set()
