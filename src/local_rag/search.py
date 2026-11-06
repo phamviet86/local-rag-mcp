@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import math
 import re
@@ -17,6 +19,7 @@ from .legal import is_number_query, make_key
 
 SEARCH_MODES = ("full_text", "semantic", "hybrid")
 MATCH_MODES = ("any", "all", "phrase", "auto")
+READ_MAX_CHARS = 40000
 
 
 class SemanticSearchUnavailable(RuntimeError):
@@ -619,10 +622,10 @@ class SearchEngine:
         window: int = 2000,
         include_trashed: bool = False,
     ) -> dict[str, Any]:
-        if start < 0 or not 1 <= length <= 100000:
-            raise ValueError("start must be nonnegative and length must be 1..100000")
-        if around is not None and (around < 0 or not 1 <= window <= 100000):
-            raise ValueError("around must be nonnegative and window must be 1..100000")
+        if start < 0 or not 1 <= length <= READ_MAX_CHARS:
+            raise ValueError(f"start must be nonnegative and length must be 1..{READ_MAX_CHARS}")
+        if around is not None and (around < 0 or not 1 <= window <= READ_MAX_CHARS):
+            raise ValueError(f"around must be nonnegative and window must be 1..{READ_MAX_CHARS}")
         document = self.db.resolve_document(path, source, include_trashed)
         artifact = document["effective_artifact_path"] or document["artifact_path"]
         payload = json.loads(Path(artifact).read_text(encoding="utf-8"))
@@ -631,7 +634,8 @@ class SearchEngine:
                 raise ValueError("around exceeds indexed text length")
             start = max(0, around - window // 2)
             length = window
-        end = min(len(payload["text"]), start + length)
+        total_chars = len(payload["text"])
+        end = min(total_chars, start + length)
         spans = [span for span in payload["spans"] if span["end"] > start and span["start"] < end]
         source_name = str(document["source_name"])
         source_kind = str(document["source_kind"])
@@ -652,11 +656,97 @@ class SearchEngine:
             "text": payload["text"][start:end],
             "start": start,
             "end": end,
-            "total_chars": len(payload["text"]),
+            "next_start": end if end < total_chars else None,
+            "total_chars": total_chars,
             "provenance": spans,
             "has_review_corrections": bool(document["effective_artifact_path"]),
             **({"trashed_at": document["trashed_at"]} if document["trashed_at"] else {}),
         }
+
+    def list_documents(
+        self,
+        source: str | None = None,
+        folder: str | None = None,
+        media_type: str | None = None,
+        doc_type: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
+        include_trashed: bool = False,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """List indexed documents with stable keyset pagination ordered by (source_id, id)."""
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        after = _decode_cursor(cursor) if cursor else None
+        filters, values = _filter_sql(
+            self._relative_scope(folder),
+            source,
+            media_type,
+            modified_after,
+            modified_before,
+            doc_type,
+            include_trashed=include_trashed,
+        )
+        base = "FROM documents d JOIN sources s ON s.id=d.source_id WHERE s.enabled=1 " + filters
+        page_sql, page_values = "", []
+        if after:
+            page_sql = " AND (d.source_id>? OR (d.source_id=? AND d.id>?))"
+            page_values = [after[0], after[0], after[1]]
+        with self.db.connect() as connection:
+            total = connection.execute(f"SELECT count(*) {base}", values).fetchone()[0]
+            rows = connection.execute(
+                "SELECT d.*,s.name source_name,s.kind source_kind,"
+                "(SELECT count(*) FROM chunks c WHERE c.document_id=d.id) chunk_count "
+                f"{base}{page_sql} ORDER BY d.source_id,d.id LIMIT ?",
+                [*values, *page_values, limit + 1],
+            ).fetchall()
+        page = rows[:limit]
+        next_cursor = (
+            _encode_cursor(page[-1]["source_id"], page[-1]["id"]) if len(rows) > limit else None
+        )
+        return {
+            "documents": [_listing_item(row) for row in page],
+            "next_cursor": next_cursor,
+            "total": total,
+        }
+
+
+def _encode_cursor(source_id: str, document_id: int) -> str:
+    raw = json.dumps({"s": source_id, "i": document_id}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> tuple[str, int]:
+    try:
+        data = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+        if isinstance(data, dict) and isinstance(data["s"], str) and type(data["i"]) is int:
+            return data["s"], data["i"]
+    except (ValueError, KeyError, binascii.Error):
+        pass
+    raise ValueError("invalid cursor: restart the listing without a cursor")
+
+
+def _iso_utc(value: str | None) -> str | None:
+    if value and re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", value):
+        return value.replace(" ", "T") + "Z"
+    return value
+
+
+def _listing_item(row: Any) -> dict[str, Any]:
+    return {
+        "stable_ref": stable_ref(row),
+        "source": row["source_name"],
+        "path": row["relative_path"],
+        "title": row["title"],
+        "media_type": row["media_type"],
+        "doc_no": row["doc_no"],
+        "url": row["source_url"],
+        "indexed_at": _iso_utc(row["indexed_at"]),
+        "source_modified_at": _source_modified_at(row),
+        "trashed": bool(row["trashed_at"]),
+        "chunk_count": row["chunk_count"],
+    }
 
 
 def _scope_sql(scope: str | None, column: str) -> tuple[str, list[str]]:
@@ -674,8 +764,10 @@ def _filter_sql(
     modified_before: str | None = None,
     doc_type: str | None = None,
     valid_on: str | None = None,
+    *,
+    include_trashed: bool = False,
 ) -> tuple[str, list[str]]:
-    clauses: list[str] = ["AND d.trashed_at IS NULL"]
+    clauses: list[str] = [] if include_trashed else ["AND d.trashed_at IS NULL"]
     values: list[str] = []
     if doc_type:
         clauses.append("AND ('-' || d.doc_no_key || '-') LIKE ?")

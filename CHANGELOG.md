@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+- Add the reader MCP tool and CLI `list [--source --folder --media-type --doc-type --modified-after
+  --modified-before --include-trashed --limit --cursor]` (`list_documents`): keyset-paginated
+  listing ordered by `(source_id, id)` with an opaque `next_cursor` and `total`; trashed Drive
+  files are hidden unless `include_trashed`. An invalid cursor is an error.
+- `read` now caps `length` and `window` at 40000 characters (was 100000) to fit client tool-result
+  limits, and returns `next_start` (the `end` offset, or `null` at the end of the text).
+- Add [docs/deployment-vps.md](docs/deployment-vps.md): VPS install, `serve` under systemd (operator
+  installs manually) and MCP over `ssh -T` for Claude Code, Claude Desktop and Codex. claude.ai
+  web/mobile is not supported yet.
 - Drive trash is distinguished from permanent deletion (migration 11, `documents.trashed_at`). A
   trashed file, or any file below a trashed folder, keeps its chunks, vectors and raw cache but is
   hidden from `search`, `get_chunk` and `index_coverage`; `read`, `metadata`, `check_status` and

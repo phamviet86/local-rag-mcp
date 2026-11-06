@@ -235,7 +235,7 @@ LOCAL_RAG_MCP_PROFILE=reviewer local-rag-mcp-server
 LOCAL_RAG_MCP_PROFILE=admin local-rag-mcp-server
 ```
 
-- `reader`: `search`, `read`, `get_chunk`, `get_page_image`, `check_status`, `status`, `doctor`, `index_status`, `job_status`, `refresh`, `sources`,
+- `reader`: `search`, `list_documents`, `read`, `get_chunk`, `get_page_image`, `check_status`, `status`, `doctor`, `index_status`, `job_status`, `refresh`, `sources`,
   `metadata`, and `reviews`.
 - `reviewer`: reader tools plus page correction/review resolution and evidence-backed metadata and
   relationships.

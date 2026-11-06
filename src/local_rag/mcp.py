@@ -86,12 +86,33 @@ READER_TOOLS = [
                 "path": {"type": "string"},
                 "source": {"type": "string"},
                 "start": {"type": "integer", "minimum": 0},
-                "length": {"type": "integer", "minimum": 1, "maximum": 100000},
+                "length": {"type": "integer", "minimum": 1, "maximum": 40000},
                 "around": {"type": "integer", "minimum": 0},
-                "window": {"type": "integer", "minimum": 1, "maximum": 100000},
+                "window": {"type": "integer", "minimum": 1, "maximum": 40000},
                 "include_trashed": {"type": "boolean"},
             },
             ["path"],
+        ),
+    },
+    {
+        "name": "list_documents",
+        "description": (
+            "List indexed documents (stable_ref, source, path, title, media_type, doc_no, url, "
+            "chunk_count) with filters and keyset pagination; pass next_cursor as cursor for the "
+            "next page. Trashed Drive files are hidden unless include_trashed."
+        ),
+        "inputSchema": _schema(
+            {
+                "source": {"type": "string"},
+                "folder": {"type": "string"},
+                "media_type": {"type": "string"},
+                "doc_type": {"type": "string", "description": "document code such as NĐ-CP, TT"},
+                "modified_after": {"type": "string"},
+                "modified_before": {"type": "string"},
+                "include_trashed": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+                "cursor": {"type": "string"},
+            }
         ),
     },
     {
@@ -362,6 +383,7 @@ class MCPServer:
                     "job_status",
                     "index_coverage",
                     "refresh",
+                    "list_documents",
                 }
             ]
         self.allowed = {tool["name"] for tool in self.tools}
@@ -469,6 +491,18 @@ class MCPServer:
                 values.get("around"),
                 int(values.get("window", 2000)),
                 bool(values.get("include_trashed", False)),
+            )
+        if name == "list_documents":
+            return self.service.list_documents(
+                values.get("source"),
+                values.get("folder"),
+                values.get("media_type"),
+                values.get("doc_type"),
+                values.get("modified_after"),
+                values.get("modified_before"),
+                bool(values.get("include_trashed", False)),
+                int(values.get("limit", 50)),
+                values.get("cursor"),
             )
         if name == "index_coverage":
             return self.service.index_coverage(
@@ -789,6 +823,36 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                     "folder": folder,
                     "offset": offset,
                     "limit": limit,
+                },
+            )
+        )
+
+    @server.tool(annotations=read_only)
+    def list_documents(
+        source: str | None = None,
+        folder: str | None = None,
+        media_type: str | None = None,
+        doc_type: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
+        include_trashed: bool = False,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """List indexed documents with filters; paginate by passing next_cursor as cursor."""
+        return _dict_result(
+            dispatcher.call(
+                "list_documents",
+                {
+                    "source": source,
+                    "folder": folder,
+                    "media_type": media_type,
+                    "doc_type": doc_type,
+                    "modified_after": modified_after,
+                    "modified_before": modified_before,
+                    "include_trashed": include_trashed,
+                    "limit": limit,
+                    "cursor": cursor,
                 },
             )
         )

@@ -636,6 +636,30 @@ class MultiSourceRAG:
     ) -> dict[str, Any]:
         return self.search_engine.read(path, start, length, source, around, window, include_trashed)
 
+    def list_documents(
+        self,
+        source: str | None = None,
+        folder: str | None = None,
+        media_type: str | None = None,
+        doc_type: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
+        include_trashed: bool = False,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        return self.search_engine.list_documents(
+            source,
+            folder,
+            media_type,
+            doc_type,
+            modified_after,
+            modified_before,
+            include_trashed,
+            limit,
+            cursor,
+        )
+
     def status(self) -> dict[str, Any]:
         result: dict[str, Any] = {
             **self.db.stats(),

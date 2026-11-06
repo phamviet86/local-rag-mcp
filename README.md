@@ -156,7 +156,8 @@ alone is not proof that the server can initialize. MCP profiles are capability b
 authentication: reserve `reviewer` and `admin` for trusted local processes only.
 
 The generic stdio configuration is also available in
-[config/mcp.json.example](config/mcp.json.example). Agent behavior is documented in
+[config/mcp.json.example](config/mcp.json.example). To run the index on a VPS and connect
+over SSH, see [VPS deployment](docs/deployment-vps.md). Agent behavior is documented in
 [docs/agents.md](docs/agents.md).
 
 ## Data, privacy, and operational limits
@@ -179,6 +180,7 @@ providers.
 - [Vietnamese overview](README.vi.md)
 - [Operator setup](docs/setup.md)
 - [Deployment, upgrade, rollback, and uninstall](docs/deployment.md)
+- [Deploy on a VPS and connect over SSH](docs/deployment-vps.md)
 - [Agent workflow](docs/agents.md)
 - [Contributor and coding-agent setup](CONTRIBUTING.md)
 - [Feature and command reference](docs/reference.md)

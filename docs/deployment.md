@@ -144,6 +144,11 @@ Restart/reconnect the host and make an MCP `doctor`, `sources`, and `search` cal
 `no_enabled_sources` is the expected search response. Add a source only after the owner identifies
 it; see [setup.md](setup.md).
 
+## Remote host over SSH
+
+To keep the index and `serve` daemon on a VPS and launch the MCP server through `ssh -T`, follow
+[deployment-vps.md](deployment-vps.md).
+
 ## Troubleshooting from `doctor`
 
 Start every diagnosis with `local-rag-mcp --home "$DATA_ROOT" doctor --json`. Exit code `2` signals

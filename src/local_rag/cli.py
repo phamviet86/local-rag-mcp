@@ -167,12 +167,22 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     read.add_argument("path")
     read.add_argument("--source")
     read.add_argument("--start", type=int, default=0)
-    read.add_argument("--length", type=int, default=12000)
+    read.add_argument("--length", type=int, default=12000, help="characters to read, 1..40000")
     read.add_argument("--around", type=int)
-    read.add_argument("--window", type=int, default=2000)
+    read.add_argument("--window", type=int, default=2000, help="window for --around, 1..40000")
     read.add_argument(
         "--include-trashed", action="store_true", help="also read a document in the Drive trash"
     )
+    listing = commands.add_parser("list", help="list indexed documents with keyset pagination")
+    listing.add_argument("--source")
+    listing.add_argument("--folder", "--scope", dest="folder")
+    listing.add_argument("--media-type")
+    listing.add_argument("--doc-type", help="document code filter, e.g. NĐ-CP or TT")
+    listing.add_argument("--modified-after")
+    listing.add_argument("--modified-before")
+    listing.add_argument("--include-trashed", action="store_true")
+    listing.add_argument("--limit", type=int, default=50)
+    listing.add_argument("--cursor", help="next_cursor from the previous page")
     commands.add_parser("status")
     doctor = commands.add_parser("doctor", help="run actionable readiness checks")
     doctor.add_argument("--json", action="store_true", help="emit the stable JSON contract")
@@ -425,6 +435,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.around,
             args.window,
             args.include_trashed,
+        )
+    elif command == "list":
+        output = service.list_documents(
+            args.source,
+            args.folder,
+            args.media_type,
+            args.doc_type,
+            args.modified_after,
+            args.modified_before,
+            args.include_trashed,
+            args.limit,
+            args.cursor,
         )
     elif command == "status":
         output = service.status()

@@ -48,6 +48,22 @@ Profiles expose capabilities only; they are not authentication or a sandbox. Giv
 4. Preserve returned citation/provenance fields: source, relative path, URL where present, content
    hash/revision, page, and locator.
 
+### Recommended workflow
+
+`doctor` -> `sources` -> `search` (or `list_documents` to enumerate a source or folder) -> `read`
+-> `refresh` when `last_synced_at` is old.
+
+- `list_documents(source?, folder?, media_type?, doc_type?, modified_after?, modified_before?,
+  include_trashed?, limit<=100, cursor?)` returns `documents` (`stable_ref`, `source`, `path`,
+  `title`, `media_type`, `doc_no`, `url`, `indexed_at`, `source_modified_at`, `trashed`,
+  `chunk_count`), `total` and `next_cursor`. Pass `next_cursor` back as `cursor` until it is `null`;
+  the cursor is opaque. Trashed Drive files are hidden unless `include_trashed`. An invalid cursor is
+  an error: restart without one.
+- `read` returns at most 40000 characters per call (default `length` 12000). While `next_start` is not
+  `null`, call `read` again with `start=next_start`; it is `null` at the end of the text.
+- If `last_synced_at` for the source is old, call `refresh` and poll `job_status` before concluding.
+- Over SSH to a VPS, see [deployment-vps.md](deployment-vps.md).
+
 Prefer hybrid retrieval if embeddings are available. If it reports fallback, use the full-text
 results honestly. When embeddings are unavailable, full-text retrieval remains usable; do not claim
 the entire index is unavailable. When OCR is unavailable, native extraction remains usable and
