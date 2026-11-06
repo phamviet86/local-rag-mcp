@@ -51,15 +51,32 @@ class SyncScheduler:
         # Never recorded: age from source creation so restarts cannot postpone the full scan.
         return parse_utc(source.created_at) if source.created_at else self.started_at
 
+    def _last_full_attempt(self, source: SourceRecord) -> datetime | None:
+        """Newest non-rejected full reconcile job for this source, successful or not."""
+        with self.service.db.connect() as connection:
+            row = connection.execute(
+                """SELECT created_at FROM index_jobs
+                   WHERE kind='reconcile' AND full=1 AND target IS NULL
+                     AND state!='rejected' AND source IN (?, ?)
+                   ORDER BY created_at DESC LIMIT 1""",
+                (source.id, source.name),
+            ).fetchone()
+        return parse_utc(str(row[0])) if row is not None else None
+
     def due(self, source: SourceRecord, now: datetime | None = None) -> str | None:
         """Return "full", "incremental" or None for one source."""
         moment = now or self.clock()
+        poll = poll_seconds(self.service.settings, source)
         if source.kind == "google_drive":
             elapsed_full = (moment - self._last_full(source)).total_seconds()
-            if elapsed_full >= full_reconcile_seconds(source):
+            attempt = self._last_full_attempt(source)
+            # A failed full scan leaves last_full_reconcile_at unstamped; retry it at most once
+            # per poll interval instead of on every scheduler pass.
+            throttled = attempt is not None and (moment - attempt).total_seconds() < poll
+            if elapsed_full >= full_reconcile_seconds(source) and not throttled:
                 return "full"
         elapsed = (moment - self._reference(source)).total_seconds()
-        if elapsed >= poll_seconds(self.service.settings, source):
+        if elapsed >= poll:
             return "incremental"
         return None
 

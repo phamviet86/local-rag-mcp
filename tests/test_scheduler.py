@@ -143,6 +143,25 @@ def test_scheduler_full_reconcile_and_tracking(service, clock, tmp_path):
     assert job is not None and job["full"] is True
 
 
+def test_failed_full_reconcile_is_retried_once_per_poll_interval(service, clock, tmp_path):
+    add_drive(service, tmp_path, poll_seconds=60, full_reconcile_seconds=3600)
+    scheduler = SyncScheduler(service, clock)
+    clock.advance(3601)
+    set_sync(service, "default", clock.now)
+    set_sync(service, "drive", clock.now)
+    first = scheduler.run_once()
+    assert first is not None and first["full"] is True
+    # The full scan ends with errors: no last_full_reconcile_at stamp is written.
+    with service.db.transaction() as connection:
+        connection.execute("UPDATE index_jobs SET state='error' WHERE id=?", (first["id"],))
+    set_job_created(service, first["id"], clock.now)
+    clock.advance(5)
+    assert scheduler.due(service.registry.get("drive")) != "full"
+    assert scheduler.run_once() is None
+    clock.advance(60)
+    assert scheduler.due(service.registry.get("drive")) == "full"
+
+
 def test_full_scan_records_last_full_reconcile(tmp_path, clock):
     home = tmp_path / "home"
     settings = Settings(root=home, home=home, chunk_chars=100, chunk_overlap=10)

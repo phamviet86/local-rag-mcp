@@ -250,6 +250,22 @@ LOCAL_RAG_MCP_PROFILE=admin local-rag-mcp-server
 - `admin`: reviewer tools plus queued and synchronous reconcile/reindex, enable/disable, and
   confirmed source removal.
 
+Reader tool details added in this release:
+
+- `read(path, source?, start=0, length=12000, around?, window?, include_trashed=false)`: `length`
+  and `window` are capped at 40000 characters. The result has `end`, `total_chars` and
+  `next_start` (`end` while more text remains, otherwise `null`); page with `start=next_start`.
+  A document in the Drive trash returns a `document_trashed` error unless `include_trashed` is
+  true.
+- `list_documents(source?, folder?, media_type?, doc_type?, modified_after?, modified_before?,
+  include_trashed=false, limit=50, cursor?)`: `limit` is 1..100. Items carry `stable_ref`,
+  `source`, `path`, `title`, `media_type`, `doc_no`, `url`, `indexed_at`, `source_modified_at`,
+  `trashed` and `chunk_count`. Pass the opaque `next_cursor` back as `cursor`; `null` means the
+  last page, and `total` counts all matches.
+- `refresh(source?)`: queues one incremental reconcile (never full or reindex), at most once per
+  60 s per source, and returns the job with `executor` (`daemon` or `this_process`) or
+  `{"state": "rate_limited", "retry_after_seconds": N}`.
+
 Tool annotations mark read-only, mutating, and destructive operations. Profiles are capability
 exposure boundaries, not authentication. Source removal requires explicit confirmation and still
 cannot delete authoritative source files.
@@ -297,7 +313,7 @@ Use `read(path=stable_ref, around=start_char, window=2000)` or CLI `read REF --a
 for context. Window is total characters centered on the hit, clamped at text boundaries.
 
 Search accepts `per_document` (CLI `--per-document`, default 3, range 1..100). It caps primary
-hits per document and collapses identical chunk hashes. Each content hit includes `locations`
+hits per document and collapses identical chunk bodies (`body_hash`). Each content hit includes `locations`
 with all matching enabled, in-scope document positions and citations, including copied files.
 
 ### File formats
