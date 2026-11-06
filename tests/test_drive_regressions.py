@@ -160,7 +160,7 @@ def test_arbitrary_names_four_slashes_duplicates_and_id_scope(make_service):
         assert metadata["drive_path_components"] == ["Nhóm / A", name]
         assert row["source_url"].endswith(f"id=file-{i}")
         key = metadata["drive_raw_key"]
-        assert re.fullmatch(r"[0-9a-f]{64}\.txt", key)
+        assert re.fullmatch(r"[0-9a-f]{64}\.md", key)
         assert (raw / key).resolve().parent == raw.resolve()
     results = service.search(
         "searchmarker", source="fixture", folder="id:folder-b", mode="full_text"
@@ -331,7 +331,7 @@ def test_untrusted_id_never_becomes_filesystem_path(make_service, identifier):
     service = make_service(backend)
     assert source_report(service, full=True)["indexed"] == 1
     metadata = json.loads(rows(service)[identifier]["metadata_json"])
-    assert metadata["drive_raw_key"] == hashlib.sha256(identifier.encode()).hexdigest() + ".txt"
+    assert metadata["drive_raw_key"] == hashlib.sha256(identifier.encode()).hexdigest() + ".md"
     assert metadata["original_name"] == "../../title"
     assert _display_segment("a/b") != _display_segment("a%2Fb")
 

@@ -65,6 +65,8 @@ local-rag-mcp source add-drive work-drive DRIVE_ROOT_FOLDER_ID \
 
 Client-secret and token contents are never stored in SQLite; only the token path is registered, and
 that path is omitted from reader/status output. Token files must have mode `0600` on POSIX.
+A service account is the alternative: `source add-drive ... --service-account-key PATH` (mutually
+exclusive with `--token-file`, key mode `0600`); see [setup.md](setup.md).
 
 Full sync walks the configured root, rejects incomplete listings and unsafe path segments, and
 supports text/Markdown, PDF, DOCX, XLSX, PPTX, Google Docs, Sheets, and Slides. Incremental sync
@@ -126,6 +128,7 @@ local-rag-mcp search "renewal clause" --mode full_text
 local-rag-mcp search "renewal clause" --mode semantic
 local-rag-mcp read contract.pdf --source legal-drive
 local-rag-mcp read legal-drive:contract.pdf
+local-rag-mcp read legal-drive:old.pdf --include-trashed   # a Drive file in the trash
 ```
 
 Legal-document options (see [design-legal-structure.md](design-legal-structure.md)):

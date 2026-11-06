@@ -66,7 +66,11 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     drive.add_argument("name")
     drive.add_argument("root_id")
     drive.add_argument("--account", required=True)
-    drive.add_argument("--token-file", type=Path, required=True)
+    credential = drive.add_mutually_exclusive_group(required=True)
+    credential.add_argument("--token-file", type=Path, help="OAuth token from auth-google")
+    credential.add_argument(
+        "--service-account-key", type=Path, help="Google service account JSON key (mode 0600)"
+    )
     drive.add_argument("--shared-drive-id", default="")
     drive.add_argument("--exclude", action="append", default=[])
     for name in ("enable", "disable"):
@@ -166,6 +170,9 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     read.add_argument("--length", type=int, default=12000)
     read.add_argument("--around", type=int)
     read.add_argument("--window", type=int, default=2000)
+    read.add_argument(
+        "--include-trashed", action="store_true", help="also read a document in the Drive trash"
+    )
     commands.add_parser("status")
     doctor = commands.add_parser("doctor", help="run actionable readiness checks")
     doctor.add_argument("--json", action="store_true", help="emit the stable JSON contract")
@@ -326,6 +333,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.token_file,
                 args.shared_drive_id,
                 args.exclude,
+                args.service_account_key,
             )
         elif args.source_command == "relocate":
             output = service.start_index_job(
@@ -410,7 +418,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         output = _evaluate(service, args)
     elif command == "read":
         output = service.read(
-            args.path, args.source, args.start, args.length, args.around, args.window
+            args.path,
+            args.source,
+            args.start,
+            args.length,
+            args.around,
+            args.window,
+            args.include_trashed,
         )
     elif command == "status":
         output = service.status()

@@ -89,6 +89,7 @@ READER_TOOLS = [
                 "length": {"type": "integer", "minimum": 1, "maximum": 100000},
                 "around": {"type": "integer", "minimum": 0},
                 "window": {"type": "integer", "minimum": 1, "maximum": 100000},
+                "include_trashed": {"type": "boolean"},
             },
             ["path"],
         ),
@@ -459,6 +460,7 @@ class MCPServer:
                     int(values.get("length", 12000)),
                     values.get("around"),
                     int(values.get("window", 2000)),
+                    bool(values.get("include_trashed", False)),
                 )
             return self.service.read(
                 values["path"],
@@ -466,6 +468,7 @@ class MCPServer:
                 int(values.get("length", 12000)),
                 values.get("around"),
                 int(values.get("window", 2000)),
+                bool(values.get("include_trashed", False)),
             )
         if name == "index_coverage":
             return self.service.index_coverage(
@@ -798,6 +801,7 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         length: int = 12000,
         around: int | None = None,
         window: int = 2000,
+        include_trashed: bool = False,
     ) -> dict[str, Any]:
         """Read cached text with source identity, authority, revision/hash, and provenance."""
         return _dict_result(
@@ -810,6 +814,7 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                     "length": length,
                     "around": around,
                     "window": window,
+                    "include_trashed": include_trashed,
                 },
             )
         )

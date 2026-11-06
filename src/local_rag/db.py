@@ -207,7 +207,15 @@ MIGRATIONS = [
       started_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL
     );
     """,
+    """
+    ALTER TABLE documents ADD COLUMN trashed_at TEXT;
+    CREATE INDEX documents_trashed_idx ON documents(trashed_at);
+    """,
 ]
+
+
+class DocumentTrashedError(ValueError):
+    """The document exists but its Drive file is in the trash."""
 
 
 class Database:
@@ -291,7 +299,17 @@ class Database:
                 ).fetchone(),
             )
 
-    def resolve_document(self, path: str, source: str | None = None) -> sqlite3.Row:
+    def resolve_document(
+        self, path: str, source: str | None = None, include_trashed: bool = False
+    ) -> sqlite3.Row:
+        row = self._resolve_document(path, source)
+        if row["trashed_at"] and not include_trashed:
+            raise DocumentTrashedError(
+                "document_trashed: the Drive file is in the trash; it is hidden until restored"
+            )
+        return row
+
+    def _resolve_document(self, path: str, source: str | None = None) -> sqlite3.Row:
         stable_sql = ""
         stable_values: list[Any] = []
         if path.startswith("drive:"):
@@ -515,6 +533,70 @@ class Database:
             "documents_purged": len(document_ids),
             "vectors_purged": vectors_purged,
         }
+
+    def document_artifact_paths(
+        self, document_ids: Sequence[int] = (), source_id: str | None = None
+    ) -> set[str]:
+        """Extraction/correction/revision artifact files used by the given documents or source."""
+        values: list[Any]
+        if source_id is not None:
+            where, values = "d.source_id=?", [source_id]
+        elif document_ids:
+            where = f"d.id IN ({','.join('?' for _ in document_ids)})"
+            values = list(document_ids)
+        else:
+            return set()
+        with self.connect() as connection:
+            paths = {
+                str(path)
+                for row in connection.execute(
+                    f"SELECT artifact_path,effective_artifact_path FROM documents d WHERE {where}",
+                    values,
+                )
+                for path in (row["artifact_path"], row["effective_artifact_path"])
+                if path
+            }
+            paths.update(
+                str(row["artifact_path"])
+                for row in connection.execute(
+                    f"""SELECT rr.artifact_path FROM review_revisions rr
+                        JOIN documents d ON d.id=rr.document_id WHERE {where}""",
+                    values,
+                )
+                if row["artifact_path"]
+            )
+        return paths
+
+    def referenced_artifact_paths(self) -> set[str]:
+        with self.connect() as connection:
+            paths = {
+                str(path)
+                for row in connection.execute(
+                    "SELECT artifact_path,effective_artifact_path FROM documents"
+                )
+                for path in (row["artifact_path"], row["effective_artifact_path"])
+                if path
+            }
+            paths.update(
+                str(row[0])
+                for row in connection.execute("SELECT artifact_path FROM review_revisions")
+                if row[0]
+            )
+        return paths
+
+    def purge_orphan_vectors(self) -> int:
+        with self.transaction() as connection:
+            count = int(
+                connection.execute(
+                    """SELECT count(*) FROM vectors v WHERE NOT EXISTS
+                       (SELECT 1 FROM chunks c WHERE c.chunk_hash=v.chunk_hash)"""
+                ).fetchone()[0]
+            )
+            connection.execute(
+                """DELETE FROM vectors WHERE NOT EXISTS
+                   (SELECT 1 FROM chunks c WHERE c.chunk_hash=vectors.chunk_hash)"""
+            )
+        return count
 
     def stats(self) -> dict[str, int]:
         with self.connect() as connection:

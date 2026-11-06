@@ -114,18 +114,29 @@ class SourceRegistry:
         name: str,
         root_id: str,
         account: str,
-        token_file: Path,
+        token_file: Path | None,
         shared_drive_id: str = "",
         exclusions: list[str] | None = None,
+        service_account_key: Path | None = None,
     ) -> SourceRecord:
         if not root_id.strip() or not account.strip():
             raise ValueError("Drive root ID and account label are required")
-        token = token_file.expanduser().resolve()
-        config = {
-            "token_file": str(token),
+        if (token_file is None) == (service_account_key is None):
+            raise ValueError("provide exactly one of an OAuth token file or a service account key")
+        config: dict[str, Any] = {
             "shared_drive_id": shared_drive_id,
             "exclusions": exclusions or [],
         }
+        if service_account_key is not None:
+            config.update(
+                {
+                    "auth": "service_account",
+                    "key_file": str(service_account_key.expanduser().resolve()),
+                }
+            )
+        else:
+            assert token_file is not None
+            config.update({"auth": "oauth", "token_file": str(token_file.expanduser().resolve())})
         row = self.db.add_source(name, "google_drive", root_id.strip(), account, config)
         return SourceRecord.from_dict(row)
 
@@ -160,6 +171,7 @@ class SourceRegistry:
     def public(self, source: SourceRecord) -> dict[str, Any]:
         config = dict(source.config)
         token_configured = bool(config.pop("token_file", ""))
+        key_configured = bool(config.pop("key_file", ""))
         return {
             "id": source.id,
             "name": source.name,
@@ -169,6 +181,7 @@ class SourceRegistry:
             "enabled": source.enabled,
             "config": config,
             "token_configured": token_configured,
+            "key_configured": key_configured,
             "cursor_configured": bool(source.cursor),
             **freshness(self.settings, source),
             "full_reconcile_seconds": full_reconcile_seconds(source),

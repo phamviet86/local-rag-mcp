@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+- Drive trash is distinguished from permanent deletion (migration 11, `documents.trashed_at`). A
+  trashed file, or any file below a trashed folder, keeps its chunks, vectors and raw cache but is
+  hidden from `search`, `get_chunk` and `index_coverage`; `read`, `metadata`, `check_status` and
+  `page_image` return `document_trashed` (`read --include-trashed` / `include_trashed` still reads
+  it). Restoring it makes it searchable again without a download unless the checksum changed. The
+  sync report gains `trashed` and `restored`. A scan error never trashes or deletes anything.
+- Hard deletes now clean up: the Drive raw export, the extraction artifact (unless another document
+  shares it) and orphaned vectors are removed, for Drive and for local files. Every full Drive
+  reconcile also removes unreferenced raw files and artifacts older than an hour, reporting
+  `gc_removed`.
+- Google Drive sources can use a service account: `source add-drive ... --service-account-key PATH`
+  (mutually exclusive with `--token-file`; key file must be `0600` and is hidden from `sources`).
+- Google Docs are now exported as Markdown (`.md`) so headings become `section_path`. Existing Docs
+  indexed as `.txt` are re-exported and reindexed once at the next full scan.
 - Per-source sync schedule: `source set NAME --poll-seconds N --full-reconcile-seconds N` stores
   `poll_seconds` (Drive 300, local 600, minimum 60) and `full_reconcile_seconds` (43200) in the
   source config. The `serve` daemon replaces its global `reconcile_seconds` timer with a scheduler

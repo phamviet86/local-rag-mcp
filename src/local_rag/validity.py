@@ -84,7 +84,7 @@ def check_status(db: Database, path: str, on: str, source: str | None = None) ->
             target = connection.execute(
                 """SELECT d.id,d.doc_no,v.effective_from,v.effective_to FROM documents d
                    JOIN document_validity v ON v.document_id=d.id
-                   WHERE d.doc_no_key=? AND d.id<>?""",
+                   WHERE d.doc_no_key=? AND d.id<>? AND d.trashed_at IS NULL""",
                 (make_key(number), document["id"]),
             ).fetchone()
             if target is not None and status_on(target, on) == "expired":
@@ -96,7 +96,7 @@ def check_status(db: Database, path: str, on: str, source: str | None = None) ->
             for row in connection.execute(
                 """SELECT d.id,d.source_id,d.external_id,s.kind source_kind FROM documents d
                    JOIN sources s ON s.id=d.source_id
-                   WHERE d.content_hash=? AND d.id<>?""",
+                   WHERE d.content_hash=? AND d.id<>? AND d.trashed_at IS NULL""",
                 (document["content_hash"], document["id"]),
             )
         ]
@@ -106,7 +106,8 @@ def check_status(db: Database, path: str, on: str, source: str | None = None) ->
             row[0]
             for row in connection.execute(
                 """SELECT DISTINCT d.doc_no FROM chunks c JOIN documents d ON d.id=c.document_id
-                   WHERE d.id<>? AND d.content_hash<>? AND c.chunk_hash IN
+                   WHERE d.id<>? AND d.content_hash<>? AND d.trashed_at IS NULL
+                     AND c.chunk_hash IN
                      (SELECT chunk_hash FROM chunks WHERE document_id=?)""",
                 (document["id"], document["content_hash"], document["id"]),
             )

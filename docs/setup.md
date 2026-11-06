@@ -97,6 +97,27 @@ local-rag-mcp source add-drive work-drive GOOGLE_DRIVE_FOLDER_ID \
 local-rag-mcp sync --source work-drive --full
 ```
 
+### Service account (no browser consent)
+
+For servers without a browser, a Google service account can read a folder instead of a user's OAuth
+token. In Google Cloud enable the Drive API, create a service account, and download a JSON key to a
+protected path (mode `0600`; never paste its contents anywhere). **Share the Drive folder (or shared
+drive) with the service account's email address as Viewer**, then register it:
+
+```bash
+chmod 600 /secure/service-account.json
+local-rag-mcp source add-drive work-drive GOOGLE_DRIVE_FOLDER_ID \
+  --account robot@my-project.iam.gserviceaccount.com \
+  --service-account-key /secure/service-account.json
+local-rag-mcp sync --source work-drive --full
+```
+
+`--service-account-key` and `--token-file` are mutually exclusive. Only the key path is stored, and
+it is hidden from `sources`/`status`. It is not verified whether `changes.list` reports files that
+were merely shared with the service account (rather than owned by it); the scheduled full scan (every
+12 hours by default, see `source set --full-reconcile-seconds`) is the safety net, and `refresh` plus
+`sync --full` catch up sooner.
+
 Use a client configured for the Google Drive read-only scope and keep its secret/token outside this
 repository. Never paste their contents into chat, issue reports, unit files, or logs. The registry
 stores a token path, not its contents; source/status responses redact the token path for reader

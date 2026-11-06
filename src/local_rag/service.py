@@ -18,7 +18,7 @@ from .embeddings import (
     public_identity,
 )
 from .extract import Extractor
-from .indexer import Indexer
+from .indexer import Indexer, remove_unreferenced_artifacts
 from .jobs import IndexJobManager, daemon_alive, daemon_info, iso_z, parse_utc
 from .ocr_runtime import OCRRuntimeManager
 from .search import SearchEngine
@@ -171,8 +171,11 @@ class LocalRAG:
         length: int = 12000,
         around: int | None = None,
         window: int = 2000,
+        include_trashed: bool = False,
     ) -> dict[str, Any]:
-        return self.search_engine.read(path, start, length, self.indexer.source_id, around, window)
+        return self.search_engine.read(
+            path, start, length, self.indexer.source_id, around, window, include_trashed
+        )
 
     def status(self) -> dict[str, Any]:
         return {
@@ -302,12 +305,13 @@ class MultiSourceRAG:
         name: str,
         root_id: str,
         account: str,
-        token_file: Path,
+        token_file: Path | None,
         shared_drive_id: str = "",
         exclusions: list[str] | None = None,
+        service_account_key: Path | None = None,
     ) -> dict[str, Any]:
         source = self.registry.add_drive(
-            name, root_id, account, token_file, shared_drive_id, exclusions
+            name, root_id, account, token_file, shared_drive_id, exclusions, service_account_key
         )
         return self.registry.public(source)
 
@@ -433,45 +437,12 @@ class MultiSourceRAG:
 
     def remove_source(self, value: str) -> dict[str, Any]:
         source = self.registry.get(value)
-        with self.db.connect() as connection:
-            artifacts = {
-                str(path)
-                for row in connection.execute(
-                    """SELECT artifact_path,effective_artifact_path FROM documents
-                       WHERE source_id=?""",
-                    (source.id,),
-                )
-                for path in (row["artifact_path"], row["effective_artifact_path"])
-                if path
-            }
-            artifacts.update(
-                str(row["artifact_path"])
-                for row in connection.execute(
-                    """SELECT rr.artifact_path FROM review_revisions rr
-                       JOIN documents d ON d.id=rr.document_id WHERE d.source_id=?""",
-                    (source.id,),
-                )
-                if row["artifact_path"]
-            )
+        artifacts = self.db.document_artifact_paths(source_id=source.id)
         result = self.db.purge_source(source.id)
         cache = self.settings.cache_dir / "sources" / source.id
         if cache.exists():
             shutil.rmtree(cache)
-        removed_artifacts = 0
-        with self.db.connect() as connection:
-            referenced = {
-                str(path)
-                for row in connection.execute(
-                    "SELECT artifact_path,effective_artifact_path FROM documents"
-                )
-                for path in (row["artifact_path"], row["effective_artifact_path"])
-                if path
-            }
-        for value in artifacts - referenced:
-            artifact = Path(value).resolve()
-            if self.settings.home == artifact or self.settings.home in artifact.parents:
-                artifact.unlink(missing_ok=True)
-                removed_artifacts += 1
+        removed_artifacts = remove_unreferenced_artifacts(self.db, self.settings, artifacts)
         result.update({"source_files_removed": False, "cache_removed": not cache.exists()})
         result["artifacts_removed"] = removed_artifacts
         return result
@@ -661,8 +632,9 @@ class MultiSourceRAG:
         length: int = 12000,
         around: int | None = None,
         window: int = 2000,
+        include_trashed: bool = False,
     ) -> dict[str, Any]:
-        return self.search_engine.read(path, start, length, source, around, window)
+        return self.search_engine.read(path, start, length, source, around, window, include_trashed)
 
     def status(self) -> dict[str, Any]:
         result: dict[str, Any] = {

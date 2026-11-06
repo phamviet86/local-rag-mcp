@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -203,6 +204,7 @@ class Indexer:
                 len(snapshots) - processed,
             )
         removed_ids = sorted(missing)
+        removed_artifacts = self.db.document_artifact_paths(removed_ids)
         try:
             with self.db.transaction() as connection:
                 for row, snapshot in moves:
@@ -231,6 +233,8 @@ class Indexer:
             report["errors"].append(f"index transaction: {error_fields('index', exc)}")
             self.db.update_source_sync(self.source_id, None, "local index transaction failed")
             return report
+        if removed_ids:
+            self.purge_derived(removed_artifacts)
         report["moved"] = len(moves)
         searchable = len(snapshots) - len(report["errors"])
         _progress(progress, "committed", len(snapshots), processed, searchable, 0)
@@ -588,9 +592,18 @@ class Indexer:
         row = self.db.document(path.resolve(), self.source_id)
         if row is None:
             return False
+        artifacts = self.db.document_artifact_paths([int(row["id"])])
         with self.db.transaction() as connection:
             _delete_document(connection, int(row["id"]), self.db)
+        self.purge_derived(artifacts)
         return True
+
+    def purge_derived(self, candidates: set[str]) -> dict[str, int]:
+        """Drop extraction artifacts no document references any more, and orphaned vectors."""
+        return {
+            "artifacts_removed": remove_unreferenced_artifacts(self.db, self.settings, candidates),
+            "vectors_purged": self.db.purge_orphan_vectors(),
+        }
 
     def move(self, source: Path, destination: Path) -> bool:
         source, destination = source.resolve(), destination.resolve()
@@ -743,6 +756,8 @@ class Indexer:
         artifact = self.settings.extracted_dir / f"{content_hash}{variant}.json"
         if use_cache and artifact.exists():
             payload = json.loads(artifact.read_text(encoding="utf-8"))
+            with contextlib.suppress(OSError):
+                os.utime(artifact)  # Keep the cleanup age guard meaningful for reused files.
             return _document_from_artifact(payload), artifact
         extracted = self.extractor.extract(path)
         payload = {
@@ -790,6 +805,19 @@ def _progress(
                 "remaining": remaining,
             }
         )
+
+
+def remove_unreferenced_artifacts(db: Database, settings: Settings, candidates: set[str]) -> int:
+    """Unlink candidate artifact files under the app home that no document still points to."""
+    removed = 0
+    referenced = db.referenced_artifact_paths() if candidates else set()
+    home = settings.home.resolve()
+    for value in candidates - referenced:
+        artifact = Path(value).resolve()
+        if home == artifact or home in artifact.parents:
+            artifact.unlink(missing_ok=True)
+            removed += 1
+    return removed
 
 
 def _delete_chunks(connection: Any, document_id: int) -> None:

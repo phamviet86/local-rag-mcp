@@ -563,8 +563,8 @@ class SearchEngine:
         with self.db.connect() as connection:
             if cite_key:
                 rows = connection.execute(
-                    f"{columns} WHERE c.cite_key=? AND s.enabled=1 {source_sql} "
-                    "ORDER BY d.id,c.ordinal",
+                    f"{columns} WHERE c.cite_key=? AND s.enabled=1 "
+                    f"AND d.trashed_at IS NULL {source_sql} ORDER BY d.id,c.ordinal",
                     [cite_key, *source_values],
                 ).fetchall()
                 if not rows:
@@ -580,7 +580,8 @@ class SearchEngine:
                     raise ValueError("ordinal must be a nonnegative integer")
                 document = self.db.resolve_document(str(document_ref), source)
                 found = connection.execute(
-                    f"{columns} WHERE c.document_id=? AND c.ordinal=? AND s.enabled=1",
+                    f"{columns} WHERE c.document_id=? AND c.ordinal=? AND s.enabled=1 "
+                    "AND d.trashed_at IS NULL",
                     [document["id"], ordinal],
                 ).fetchone()
                 if found is None:
@@ -616,12 +617,13 @@ class SearchEngine:
         source: str | None = None,
         around: int | None = None,
         window: int = 2000,
+        include_trashed: bool = False,
     ) -> dict[str, Any]:
         if start < 0 or not 1 <= length <= 100000:
             raise ValueError("start must be nonnegative and length must be 1..100000")
         if around is not None and (around < 0 or not 1 <= window <= 100000):
             raise ValueError("around must be nonnegative and window must be 1..100000")
-        document = self.db.resolve_document(path, source)
+        document = self.db.resolve_document(path, source, include_trashed)
         artifact = document["effective_artifact_path"] or document["artifact_path"]
         payload = json.loads(Path(artifact).read_text(encoding="utf-8"))
         if around is not None:
@@ -653,6 +655,7 @@ class SearchEngine:
             "total_chars": len(payload["text"]),
             "provenance": spans,
             "has_review_corrections": bool(document["effective_artifact_path"]),
+            **({"trashed_at": document["trashed_at"]} if document["trashed_at"] else {}),
         }
 
 
@@ -672,7 +675,7 @@ def _filter_sql(
     doc_type: str | None = None,
     valid_on: str | None = None,
 ) -> tuple[str, list[str]]:
-    clauses: list[str] = []
+    clauses: list[str] = ["AND d.trashed_at IS NULL"]
     values: list[str] = []
     if doc_type:
         clauses.append("AND ('-' || d.doc_no_key || '-') LIKE ?")
