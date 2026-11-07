@@ -12,6 +12,7 @@ MESSAGES = {
         "markitdown is not installed; run: pip install 'phamviet-local-rag-mcp[markitdown]'"
     ),
     "markitdown_failed": "markitdown could not convert the file.",
+    "image_unreadable": "Image could not be decoded.",
 }
 
 

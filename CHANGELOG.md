@@ -9,6 +9,9 @@ All notable changes to this project are documented in this file. This project fo
 
 See [v0.11.0 release notes](docs/releases/v0.11.0.md).
 
+- Index JPEG, PNG and WebP images (local and Drive) with the existing local OCR: each upright
+  image becomes one OCR page (`page:1`) with the OCR notice, review routing and `get_page_image`.
+  Homes on an earlier default extension list pick the image types up automatically.
 - Drive paths are readable: name components are NFC-normalized and only `%`, `/`, `\` and control
   characters are percent-encoded (previously every space and accented letter was, e.g.
   `4.%20QUY%20TRI%CC%80NH.docx`). Existing documents pick up the new path on their next full sync;

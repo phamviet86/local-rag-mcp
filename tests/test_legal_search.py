@@ -251,7 +251,7 @@ def test_page_image_errors_without_runtime_and_for_text_files(
 ) -> None:
     from tests.helpers import write_text_pdf
 
-    with pytest.raises(ValueError, match="PDF documents only"):
+    with pytest.raises(ValueError, match="PDF and image documents only"):
         service.page_image("law:nghi-dinh.txt", 1)
     write_text_pdf(tmp_path / "docs" / "native.pdf", "Hello page image")
     service.reconcile()

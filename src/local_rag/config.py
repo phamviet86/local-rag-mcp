@@ -8,9 +8,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 LEGACY_EXTENSIONS = frozenset({".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx", ".pptx"})
-SUPPORTED_EXTENSIONS = LEGACY_EXTENSIONS | frozenset(
+DOCUMENT_EXTENSIONS = LEGACY_EXTENSIONS | frozenset(
     {".html", ".htm", ".csv", ".json", ".epub", ".odt", ".ods", ".odp"}
 )
+SUPPORTED_EXTENSIONS = DOCUMENT_EXTENSIONS | frozenset({".jpg", ".jpeg", ".png", ".webp"})
+# Untouched earlier defaults: a home saved with one of these adopts the current formats.
+PREVIOUS_DEFAULT_EXTENSIONS = (LEGACY_EXTENSIONS, DOCUMENT_EXTENSIONS)
 DEFAULT_EXCLUSIONS = frozenset(
     {".git", ".hg", ".svn", ".venv", "__pycache__", "node_modules", "$RECYCLE.BIN"}
 )
@@ -182,7 +185,7 @@ class Settings:
         embedding = embedding_file_settings(data_home)
         saved = payload.get("extensions")
         extensions = SUPPORTED_EXTENSIONS if saved is None else frozenset(map(_extension, saved))
-        if extensions == LEGACY_EXTENSIONS:
+        if extensions in PREVIOUS_DEFAULT_EXTENSIONS:
             extensions = SUPPORTED_EXTENSIONS  # untouched old default: adopt the new formats
         return cls(
             root=Path(payload["root"]),

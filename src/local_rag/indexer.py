@@ -252,7 +252,7 @@ class Indexer:
         )
         if missing_ocr:
             report["warnings"].append(
-                f"{missing_ocr} PDF page(s) require OCR and were added to the review queue"
+                f"{missing_ocr} PDF or image page(s) require OCR and were added to the review queue"
             )
         if report["errors"] or target is None:
             self.db.update_source_sync(

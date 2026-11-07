@@ -69,8 +69,8 @@ A service account is the alternative: `source add-drive ... --service-account-ke
 exclusive with `--token-file`, key mode `0600`); see [setup.md](setup.md).
 
 Full sync walks the configured root, rejects incomplete listings and unsafe path segments, and
-supports text/Markdown, PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, EPUB, ODT/ODS/ODP, Google Docs,
-Sheets, and Slides. Incremental sync
+supports text/Markdown, PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, EPUB, ODT/ODS/ODP, JPEG/PNG/WebP
+images, Google Docs, Sheets, and Slides. Incremental sync
 consumes the Drive changes cursor and downloads/extracts only changed content fingerprints. If any
 changed item fails download, extraction, or indexing, the durable cursor is not advanced, so the
 change page can be retried safely.
@@ -319,10 +319,10 @@ with all matching enabled, in-scope document positions and citations, including 
 ### File formats
 
 Default extensions: `.txt .md .markdown .pdf .docx .xlsx .pptx` plus `.html .htm .csv .json .epub
-.odt .ods .odp` (the new ones use the Python standard library only). Drive indexes the same formats
-by MIME type (`text/html`, `text/csv`, `application/json`, `application/epub+zip` and the ODF types).
-A home whose saved `extensions` equal the previous default list adopts the new defaults on load;
-a customized list is left as saved.
+.odt .ods .odp` (Python standard library only) and the images `.jpg .jpeg .png .webp`. Drive indexes
+the same formats by MIME type (`text/html`, `text/csv`, `application/json`, `application/epub+zip`,
+the ODF types, `image/jpeg`, `image/png`, `image/webp`). A home whose saved `extensions` equal an
+earlier default list adopts the current defaults on load; a customized list is left as saved.
 
 | Format | Text | Locator |
 | --- | --- | --- |
@@ -331,6 +331,7 @@ a customized list is left as saved.
 | JSON | flattened `path: value` leaves (50 MiB / 200,000 value limit) | `$.a.b[0]` |
 | EPUB | chapters in spine order, each through the HTML reader | `chapter:N` |
 | ODT / ODS / ODP | paragraphs and headings / rows / slides from `content.xml` | `paragraph:N`, `sheet:S/row:N`, `slide:N` |
+| JPEG / PNG / WebP | local OCR of the upright image (EXIF orientation applied, long side capped at 4096 px), as one OCR page | `page:1` |
 
 Legacy formats such as `.doc`, `.rtf` or `.xls` can be converted by the optional `markitdown` extra
 (`pip install 'phamviet-local-rag-mcp[markitdown]'`). List the extensions in `config.json`, for
@@ -339,6 +340,13 @@ one Markdown span (locator `document`). Without the library the affected files f
 `code=markitdown_missing` in the report and coverage while the rest of the source indexes normally.
 New extraction codes: `format_parse_failed`, `format_too_large`, `markitdown_missing`,
 `markitdown_failed`.
+
+Images go through the same local PP-OCR runtime as scanned PDF pages: results carry `ocr: true`,
+`page_start: 1` and the OCR notice, low-confidence or blank results open a review, and without the
+OCR runtime (`setup --no-ocr`) each image is indexed without text and opens an
+`ocr_runtime_missing` review. `get_page_image` returns the upright image for page 1. Handwriting and
+some Vietnamese diacritics are often misread; open the image before quoting OCR text. An undecodable
+image fails individually with `code=image_unreadable`. HEIC is not supported.
 
 ### Drive page images and integrity
 

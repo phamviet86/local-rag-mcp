@@ -4,6 +4,7 @@ import datetime as dt
 import mimetypes
 import re
 import tempfile
+from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,10 @@ from .xlsx_compat import (
     repair_styles,
     stylesheet_failure,
 )
+
+IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp"})
+IMAGE_MAX_SIDE = 4096
+IMAGE_PDF_DPI = 200  # pixel density of the one-page PDF a photo is wrapped in for OCR
 
 
 class Extractor:
@@ -65,7 +70,95 @@ class Extractor:
             return _pptx(path)
         if suffix == ".pdf":
             return self._pdf(path)
+        if suffix in IMAGE_SUFFIXES:
+            return self._image(path)
         raise ValueError(f"unsupported file type: {suffix}")
+
+    def _ocr(
+        self, run: Callable[[str | None], Any], routed: list[int]
+    ) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+        """Run local OCR for ``routed`` 1-based pages; return page texts and review items."""
+        pages: dict[int, dict[str, Any]] = {}
+        reviews: list[dict[str, Any]] = []
+        if not (self.ocr_enabled and self.ocr_runtime.configure()):
+            reviews.extend(
+                {
+                    "page": page,
+                    "reason": "ocr_runtime_missing",
+                    "detail": {
+                        "action": "run local-rag-mcp setup --full, then reindex --reextract"
+                    },
+                }
+                for page in routed
+            )
+            return pages, reviews
+        try:
+            model_directory = self.ocr_runtime.resolved_model_dir()
+            result = run(str(model_directory) if model_directory else None)
+            for ocr_page in result.pages:
+                number = int(ocr_page.page_number)
+                markdown = (ocr_page.markdown or "").strip()
+                provenance = ocr_page.provenance
+                if markdown:
+                    pages[number] = {
+                        "text": markdown,
+                        "source": provenance.source,
+                        "confidence": provenance.ocr_confidence,
+                    }
+                if not markdown or provenance.hosted_recommended:
+                    reviews.append(
+                        {
+                            "page": number,
+                            "reason": "low_quality_ocr" if markdown else "blank_or_failed_ocr",
+                            "detail": {"warnings": list(provenance.warnings)},
+                        }
+                    )
+        except Exception as exc:
+            reviews.extend(
+                {"page": page, "reason": "ocr_failed", "detail": {"error": str(exc)}}
+                for page in routed
+            )
+        return pages, reviews
+
+    def _image(self, path: Path) -> ExtractedDocument:
+        """OCR a photo or scan as one page: orient it, wrap it in a PDF, reuse the PDF OCR path."""
+        import io
+
+        import pdf_inspector
+        from PIL import Image, ImageOps
+
+        try:
+            with Image.open(path) as source:
+                image = ImageOps.exif_transpose(source).convert("RGB")
+        except Exception as exc:
+            raise ExtractionError("image_unreadable") from exc
+        original = image.size
+        if max(original) > IMAGE_MAX_SIDE:
+            image.thumbnail((IMAGE_MAX_SIDE, IMAGE_MAX_SIDE))
+        buffer = io.BytesIO()
+        image.save(buffer, "PDF", resolution=IMAGE_PDF_DPI)
+        pdf = buffer.getvalue()
+        pages, reviews = self._ocr(
+            lambda model: pdf_inspector.process_pdf_with_ocr_bytes(
+                pdf, page_numbers=[1], model_directory=model, offline=self.ocr_offline
+            ),
+            [1],
+        )
+        builder = _Builder()
+        for number, page_data in sorted(pages.items()):
+            builder.add(
+                page_data["text"],
+                "pdf_page",
+                f"page:{number}",
+                {key: value for key, value in page_data.items() if key != "text"},
+            )
+        metadata = {
+            "page_count": 1,
+            "pages_routed_to_ocr": [1],
+            "image_width": original[0],
+            "image_height": original[1],
+        }
+        return ExtractedDocument(builder.text, builder.spans, _media(path), metadata, reviews)
 
     def _pdf(self, path: Path) -> ExtractedDocument:
         import pdf_inspector
@@ -81,51 +174,13 @@ class Extractor:
                 pages[number] = {"text": markdown, "source": "native"}
         reviews: list[dict[str, Any]] = []
         if routed:
-            if self.ocr_enabled and self.ocr_runtime.configure():
-                try:
-                    model_directory = self.ocr_runtime.resolved_model_dir()
-                    result = pdf_inspector.process_pdf_with_ocr(
-                        str(path),
-                        page_numbers=routed,
-                        model_directory=str(model_directory) if model_directory else None,
-                        offline=self.ocr_offline,
-                    )
-                    for ocr_page in result.pages:
-                        number = int(ocr_page.page_number)
-                        markdown = (ocr_page.markdown or "").strip()
-                        provenance = ocr_page.provenance
-                        if markdown:
-                            pages[number] = {
-                                "text": markdown,
-                                "source": provenance.source,
-                                "confidence": provenance.ocr_confidence,
-                            }
-                        if not markdown or provenance.hosted_recommended:
-                            reviews.append(
-                                {
-                                    "page": number,
-                                    "reason": "low_quality_ocr"
-                                    if markdown
-                                    else "blank_or_failed_ocr",
-                                    "detail": {"warnings": list(provenance.warnings)},
-                                }
-                            )
-                except Exception as exc:
-                    reviews.extend(
-                        {"page": page, "reason": "ocr_failed", "detail": {"error": str(exc)}}
-                        for page in routed
-                    )
-            else:
-                reviews.extend(
-                    {
-                        "page": page,
-                        "reason": "ocr_runtime_missing",
-                        "detail": {
-                            "action": "run local-rag-mcp setup --full, then reindex --reextract"
-                        },
-                    }
-                    for page in routed
-                )
+            ocr_pages, reviews = self._ocr(
+                lambda model: pdf_inspector.process_pdf_with_ocr(
+                    str(path), page_numbers=routed, model_directory=model, offline=self.ocr_offline
+                ),
+                routed,
+            )
+            pages.update(ocr_pages)
         complex_pages = sorted(
             set(classification.pages_with_tables) | set(classification.pages_with_columns)
         )

@@ -53,15 +53,18 @@ def render_document_page(
     source: str | None,
     cache_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Render one page of an indexed local PDF so a citation can be checked against the original."""
+    """Render a page of an indexed PDF or image so a citation can be checked against it."""
     import base64
     import hashlib
 
-    from .pageimage import render_page_png
+    from .pageimage import render_image_png, render_page_png
 
     document = db.resolve_document(path, source)
-    if document["media_type"] != "application/pdf":
-        raise ValueError("page images are available for PDF documents only")
+    is_image = str(document["media_type"]).startswith("image/")
+    if document["media_type"] != "application/pdf" and not is_image:
+        raise ValueError("page images are available for PDF and image documents only")
+    if is_image and page != 1:
+        raise ValueError("an image document has a single page: use page 1")
     if document["source_kind"] != "local":
         cached = raw_cache_file(cache_dir, document) if cache_dir is not None else None
         if cached is None:
@@ -74,11 +77,14 @@ def render_document_page(
         file = Path(document["path"])
     if not file.is_file():
         raise FileNotFoundError("source file is missing; the indexed text cannot be checked")
-    try:
-        library = runtime.paths().pdfium
-    except FileNotFoundError:
-        raise RuntimeError("PDFium runtime missing; run: local-rag-mcp setup --full") from None
-    png, width, height = render_page_png(file, page, library, dpi)
+    if is_image:
+        png, width, height = render_image_png(file, dpi)
+    else:
+        try:
+            library = runtime.paths().pdfium
+        except FileNotFoundError:
+            raise RuntimeError("PDFium runtime missing; run: local-rag-mcp setup --full") from None
+        png, width, height = render_page_png(file, page, library, dpi)
     digest = hashlib.sha256(file.read_bytes()).hexdigest()
     drive_fields = (
         {"cache_matches_index": digest == document["content_hash"]}

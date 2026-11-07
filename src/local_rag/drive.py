@@ -49,6 +49,9 @@ MIME_SUFFIXES = {
     "application/vnd.oasis.opendocument.text": ".odt",
     "application/vnd.oasis.opendocument.spreadsheet": ".ods",
     "application/vnd.oasis.opendocument.presentation": ".odp",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
 }
 _RAW_SUFFIXES = "|".join(
     sorted({suffix[1:] for suffix in MIME_SUFFIXES.values()} | {"bin"})
