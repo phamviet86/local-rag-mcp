@@ -8,7 +8,7 @@ The product and commands are `local-rag-mcp`, but its Python distribution is
 
 ## Agent-driven setup
 
-The v0.11.0 wheel bundles `local-rag-setup` and `local-rag` skills.
+The v0.12.0 wheel bundles `local-rag-setup` and `local-rag` skills.
 Follow the [agent install instructions](../README.md#install-with-an-agent)
 to install the package and run `install-skills`. The setup agent reads the installed skill at the
 absolute path reported by that command, inspects existing sources/configuration, requests only
@@ -72,7 +72,7 @@ local-rag-mcp source add-local engineering /srv/engineering --exclude archive --
 
 ## Add a Google Drive source (optional)
 
-Install the `google-drive` extra from the v0.11.0 release wheel when it is needed. OAuth provisioning
+Install the `google-drive` extra from the v0.12.0 release wheel when it is needed. OAuth provisioning
 happens only on the operator's machine and is intentionally unavailable through MCP.
 
 Before running the commands below, the operator must use a Google Cloud project to enable the Google
@@ -84,9 +84,9 @@ downloaded client JSON and resulting token in a protected operator-controlled lo
 attach, paste, or relay their contents to an agent.
 
 ```bash
-# v0.11.0 GitHub Release wheel
+# v0.12.0 GitHub Release wheel
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.12.0/phamviet_local_rag_mcp-0.12.0-py3-none-any.whl"
 
 local-rag-mcp auth-google \
   --client-secret /secure/google-desktop-client.json \
@@ -138,9 +138,9 @@ warning if embeddings are unavailable, while `semantic` fails clearly. Local emb
 remote providers are both opt-in.
 
 ```bash
-# v0.11.0 GitHub Release wheel
+# v0.12.0 GitHub Release wheel
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.12.0/phamviet_local_rag_mcp-0.12.0-py3-none-any.whl"
 export LOCAL_RAG_MCP_EMBEDDING_PROVIDER=local
 export LOCAL_RAG_MCP_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 local-rag-mcp doctor --json

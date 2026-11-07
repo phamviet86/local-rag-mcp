@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file. This project fo
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-07
+
+See [v0.12.0 release notes](docs/releases/v0.12.0.md).
+
+- Add an optional Streamable HTTP transport: `local-rag-mcp mcp --transport streamable-http`
+  (`--host`, `--port`, `--path`, `--allowed-host`). stdio remains the default.
+- Authenticate HTTP with a bearer token from `LOCAL_RAG_MCP_HTTP_TOKEN` (at least 16 characters).
+  The token is required beyond loopback and for the `reviewer`/`admin` profiles; the default bind is
+  loopback with DNS-rebinding protection.
+
 ## [0.11.0] - 2026-11-07
 
 See [v0.11.0 release notes](docs/releases/v0.11.0.md).
