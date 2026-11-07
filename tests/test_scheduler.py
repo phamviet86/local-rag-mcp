@@ -231,6 +231,9 @@ def test_refresh_rate_limit_is_per_source(service, clock, tmp_path):
     assert first["state"] == "complete"
     second = service.refresh("second", background=False)
     assert second["state"] == "complete"
+    # Job timestamps use the real clock; re-anchor the injected clock so a second boundary crossed
+    # while the jobs ran cannot make the newest job look like it is from the future.
+    clock.now = datetime.now(UTC).replace(microsecond=0)
     # No source: limited by the newest reconcile job of any source.
     assert service.refresh(None, background=False)["state"] == "rate_limited"
 
