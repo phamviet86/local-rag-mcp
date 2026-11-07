@@ -8,12 +8,12 @@ import re
 import sqlite3
 import tempfile
 import time
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
-from urllib.parse import quote
 
 from .coverage import RETRY, load_coverage, save_coverage, source_failure
 from .extraction_errors import MAX_FILE_BYTES, ExtractionError, error_fields
@@ -1104,10 +1104,24 @@ def _listing_failure(
 
 
 def _display_segment(value: str) -> str:
-    """URI component for display/scoping only. NEVER used as a filesystem name."""
+    """Readable path component for display/scoping only. NEVER used as a filesystem name.
+
+    The name is NFC-normalized; only ``%``, ``/``, ``\\`` and control/format characters are
+    percent-encoded, so spaces and Vietnamese letters stay readable while distinct titles such as
+    ``a/b`` and ``a%2Fb`` still map to distinct components.
+    """
+    value = unicodedata.normalize("NFC", value)
     if value in {".", ".."}:
         return "%2E" * len(value)
-    return quote(value, safe="") or "%EMPTY"
+    if not value:
+        return "%EMPTY"
+    return "".join(_escape_char(char) for char in value)
+
+
+def _escape_char(char: str) -> str:
+    if char in "%/\\" or unicodedata.category(char).startswith("C"):
+        return "".join(f"%{byte:02X}" for byte in char.encode("utf-8", "surrogatepass"))
+    return char
 
 
 def _scan(value: DriveScan | tuple[Sequence[DriveItem], str]) -> DriveScan:

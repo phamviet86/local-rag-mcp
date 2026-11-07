@@ -11,7 +11,7 @@ from openpyxl.styles import PatternFill
 
 from local_rag import xlsx_compat as compat
 from local_rag.config import Settings
-from local_rag.extract import _xlsx
+from local_rag.extract import _cell_text, _xlsx
 from local_rag.extraction_errors import ExtractionError
 from local_rag.mcp import MCPServer
 from local_rag.service import MultiSourceRAG
@@ -108,10 +108,10 @@ def test_equivalence_and_immutability(tmp_path, color):
     assert "3" in actual.text
     assert before == (malformed.read_bytes(), malformed.stat().st_mtime_ns)
     assert list(cache.iterdir()) == []
-    # v0.10.0 extraction contract, independently reconstructed from openpyxl.
+    # Extraction contract: every non-empty cell in workbook order, rendered as displayed.
     book = load_workbook(baseline, read_only=True, data_only=True)
     values = [
-        (str(c.value).strip(), f"sheet:{s.title}/cell:{c.coordinate}")
+        (_cell_text(c.value, c.number_format).strip(), f"sheet:{s.title}/cell:{c.coordinate}")
         for s in book
         for row in s
         for c in row
@@ -368,3 +368,34 @@ def test_drive_stage_separates_download_and_index(tmp_path, stage):
     assert "private" not in json.dumps(report)
     issue = service.index_coverage()["issues"][0]
     assert issue["stage"] == stage and issue["code"] is None
+
+
+def test_cells_render_as_displayed(tmp_path):
+    text = _xlsx(workbook(tmp_path / "shown.xlsx")).text.split("\n\n")
+    assert text[:6] == [
+        "Synthetic header",
+        "2026-01-02",
+        "12:34",
+        "2026-01-02 12:34",
+        "12.5%",
+        "42.75",
+    ]
+    assert "7" in text
+
+
+@pytest.mark.parametrize(
+    "value,fmt,expected",
+    [
+        (5000000.0, "#,##0", "5,000,000"),
+        (5000000.0, "General", "5000000"),
+        (dt.datetime(2026, 11, 3), "dd/mm/yyyy", "03/11/2026"),
+        (dt.datetime(2026, 11, 3, 8, 5, 9), "dd/mm/yyyy hh:mm:ss", "03/11/2026 08:05:09"),
+        (0.1 + 0.2, "General", "0.3"),
+        (1234.5, "[$-409]#,##0.0", "1,234.5"),
+        (-1.5, '#,##0.00;"neg"', "-1.50"),
+        (True, None, "TRUE"),
+        ("  kept  ", "@", "  kept  "),
+    ],
+)
+def test_cell_text(value, fmt, expected):
+    assert _cell_text(value, fmt) == expected

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import datetime as dt
 import mimetypes
+import re
 import tempfile
 from contextlib import ExitStack
 from pathlib import Path
@@ -237,7 +239,7 @@ def _xlsx(path: Path, cache_dir: Path | None = None) -> ExtractedDocument:
                     for cell in row:
                         if cell.value is not None:
                             builder.add(
-                                str(cell.value),
+                                _cell_text(cell.value, getattr(cell, "number_format", None)),
                                 "xlsx_cell",
                                 f"sheet:{sheet.title}/cell:{cell.coordinate}",
                             )
@@ -254,6 +256,63 @@ def _xlsx(path: Path, cache_dir: Path | None = None) -> ExtractedDocument:
             else "xlsx_parse_failed"
         )
         raise ExtractionError(code) from exc
+
+
+_QUOTED = re.compile(r'"[^"]*"|\\.|\[[^\]]*\]')
+
+
+def _cell_text(value: Any, number_format: str | None) -> str:
+    """Render a cell roughly as a spreadsheet displays it, so amounts and dates are searchable.
+
+    Strings are unchanged. Dates follow a day-first or ISO order taken from the number format and
+    drop a midnight time; numbers drop a spurious ``.0``, keep the format's decimal places, and
+    use thousands separators or a percent sign when the format asks for them. Currency or other
+    literal text in the format is not reproduced.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    pattern = _QUOTED.sub("", (number_format or "General").split(";")[0])
+    if isinstance(value, dt.datetime):
+        if value.time() == dt.time(0, 0):
+            return _date_text(value.date(), pattern)
+        return f"{_date_text(value.date(), pattern)} {_time_text(value.time())}"
+    if isinstance(value, dt.date):
+        return _date_text(value, pattern)
+    if isinstance(value, dt.time):
+        return _time_text(value)
+    if isinstance(value, int | float):
+        return _number_text(float(value) if isinstance(value, float) else value, pattern)
+    return str(value)
+
+
+def _date_text(value: dt.date, pattern: str) -> str:
+    if pattern.lower().lstrip().startswith("d"):
+        return value.strftime("%d/%m/%Y")
+    return value.isoformat()
+
+
+def _time_text(value: dt.time) -> str:
+    return value.strftime("%H:%M:%S" if value.second else "%H:%M")
+
+
+def _number_text(value: int | float, pattern: str) -> str:
+    percent = "%" in pattern
+    number = value * 100 if percent else value
+    match = re.search(r"\.([0#?]+)", pattern)
+    decimals = len(match.group(1)) if match else None
+    grouped = bool(re.search(r"[#0],[#0]", pattern))
+    if decimals is None:
+        if isinstance(number, int) or (
+            isinstance(number, float) and number.is_integer() and abs(number) < 1e15
+        ):
+            text = f"{int(number):,}" if grouped else str(int(number))
+        else:
+            text = f"{number:,.10g}" if grouped else f"{number:.10g}"
+    else:
+        text = f"{number:,.{decimals}f}" if grouped else f"{number:.{decimals}f}"
+    return f"{text}%" if percent else text
 
 
 def _pptx(path: Path) -> ExtractedDocument:

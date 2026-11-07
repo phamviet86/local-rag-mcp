@@ -9,6 +9,13 @@ All notable changes to this project are documented in this file. This project fo
 
 See [v0.11.0 release notes](docs/releases/v0.11.0.md).
 
+- Drive paths are readable: name components are NFC-normalized and only `%`, `/`, `\` and control
+  characters are percent-encoded (previously every space and accented letter was, e.g.
+  `4.%20QUY%20TRI%CC%80NH.docx`). Existing documents pick up the new path on their next full sync;
+  path-based `folder` scopes must use the readable form.
+- Spreadsheet cells are rendered as displayed: `#,##0` amounts become `5,000,000`, whole floats drop
+  `.0`, dates follow the cell's day-first or ISO format without a midnight time, and percent formats
+  keep their sign. Run `reindex --reextract` to apply this to already indexed `.xlsx` and Sheets.
 - Merge the four per-version release workflows into `.github/workflows/release.yml`: it derives the
   version from `pyproject.toml`, requires `docs/releases/v<version>.md` and the `[release
   v<version>]` commit marker, fails when the tag already exists on another commit, and keeps

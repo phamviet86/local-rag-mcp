@@ -9,9 +9,10 @@ normalization/case variants and duplicate titles cannot cause raw-cache collisio
 Automatic metadata retains the full original `title` and `original_name`, `drive_file_id`,
 `drive_parent_id`, `drive_ancestor_ids` (including the configured root), `drive_path_components`,
 `drive_web_url`, MIME type, and `drive_raw_key`. The index also returns its source URL, stable external
-ID, hash and revision. `relative_path` uses standard URI-escaped name components for display/path
-scopes; a slash *inside* a title becomes `%2F`. Dot-only components are escaped and an empty title uses
-`%EMPTY`. Copy the returned path for path-based scopes. Use `folder="id:<folder-id>"` in search, or
+ID, hash and revision. `relative_path` keeps each name readable (NFC-normalized, spaces and accented
+letters unchanged) for display/path scopes; only `%`, `/`, `\` and control characters are
+percent-encoded, so a slash *inside* a title becomes `%2F` and a literal `%` becomes `%25`. Dot-only
+components are escaped and an empty title uses `%EMPTY`. Copy the returned path for path-based scopes. Use `folder="id:<folder-id>"` in search, or
 `id:<file-or-folder-id>` as reconcile/reindex target, to distinguish duplicate folder/file names.
 IDs are never interpreted as local paths. Scope filters remain strict; original titles are available
 for readable citations even when the path is escaped.
