@@ -30,7 +30,7 @@ classifiers = [
   "Topic :: Text Processing :: Indexing",
 ]
 dependencies = [
-  "mcp==2.0.0",
+  "mcp==2.2.0",
   "openpyxl>=3.1,<4",
   "pdf-inspector==1.25.2",
   "pillow>=10,<14",
