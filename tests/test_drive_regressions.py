@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import unicodedata
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -160,7 +161,7 @@ def test_arbitrary_names_four_slashes_duplicates_and_id_scope(make_service):
         assert metadata["drive_path_components"] == ["Nhóm / A", name]
         assert row["source_url"].endswith(f"id=file-{i}")
         key = metadata["drive_raw_key"]
-        assert re.fullmatch(r"[0-9a-f]{64}\.txt", key)
+        assert re.fullmatch(r"[0-9a-f]{64}\.md", key)
         assert (raw / key).resolve().parent == raw.resolve()
     results = service.search(
         "searchmarker", source="fixture", folder="id:folder-b", mode="full_text"
@@ -331,7 +332,7 @@ def test_untrusted_id_never_becomes_filesystem_path(make_service, identifier):
     service = make_service(backend)
     assert source_report(service, full=True)["indexed"] == 1
     metadata = json.loads(rows(service)[identifier]["metadata_json"])
-    assert metadata["drive_raw_key"] == hashlib.sha256(identifier.encode()).hexdigest() + ".txt"
+    assert metadata["drive_raw_key"] == hashlib.sha256(identifier.encode()).hexdigest() + ".md"
     assert metadata["original_name"] == "../../title"
     assert _display_segment("a/b") != _display_segment("a%2Fb")
 
@@ -687,3 +688,29 @@ def test_drive_metadata_move_keeps_corrections_metadata_and_vectors(make_service
     assert service.db.review(review["id"])["status"] == "resolved"
     assert service.read("drive:file")["text"] == "Human corrected orchard"
     assert service.metadata("drive:file")["agent"][0]["key"] == "tag"
+
+
+def test_display_segment_is_readable_and_injective():
+    decomposed = unicodedata.normalize("NFD", "4. QUY TRÌNH THU NGÂN.docx")
+    assert _display_segment(decomposed) == "4. QUY TRÌNH THU NGÂN.docx"
+    assert _display_segment("a/b") == "a%2Fb"
+    assert _display_segment("a%2Fb") == "a%252Fb"
+    assert _display_segment("a\\b") == "a%5Cb"
+    assert _display_segment("tab\there\0") == "tab%09here%00"
+    assert _display_segment("..") == "%2E%2E"
+    assert _display_segment("") == "%EMPTY"
+    assert _display_segment("%EMPTY") == "%25EMPTY"
+
+
+def test_readable_drive_path_and_folder_scope(make_service):
+    backend = TreeDrive(
+        {
+            "root": [value("f", "Hướng dẫn", FOLDER_MIME)],
+            "f": [value("doc", "Quy trình thu ngân.md")],
+        }
+    )
+    service = make_service(backend)
+    assert source_report(service, full=True)["indexed"] == 1
+    assert rows(service)["doc"]["relative_path"] == "Hướng dẫn/Quy trình thu ngân.md"
+    found = service.search("searchmarker", source="fixture", folder="Hướng dẫn", mode="full_text")
+    assert [r["path"] for r in found["results"]] == ["Hướng dẫn/Quy trình thu ngân.md"]

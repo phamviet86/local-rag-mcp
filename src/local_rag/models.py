@@ -35,3 +35,4 @@ class ChunkRecord:
     page_start: int | None = None
     page_end: int | None = None
     ocr: bool = False
+    body_hash: str = ""  # hash of the body without context prefix; empty means chunk_hash

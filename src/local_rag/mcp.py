@@ -33,6 +33,13 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
     }
 
 
+def _sync_note(start_tool: str) -> str:
+    return (
+        " Runs synchronously; a long run can be lost if the connection drops, "
+        f"so prefer {start_tool} + job_status over SSH."
+    )
+
+
 READER_TOOLS = [
     {
         "name": "search",
@@ -79,11 +86,33 @@ READER_TOOLS = [
                 "path": {"type": "string"},
                 "source": {"type": "string"},
                 "start": {"type": "integer", "minimum": 0},
-                "length": {"type": "integer", "minimum": 1, "maximum": 100000},
+                "length": {"type": "integer", "minimum": 1, "maximum": 40000},
                 "around": {"type": "integer", "minimum": 0},
-                "window": {"type": "integer", "minimum": 1, "maximum": 100000},
+                "window": {"type": "integer", "minimum": 1, "maximum": 40000},
+                "include_trashed": {"type": "boolean"},
             },
             ["path"],
+        ),
+    },
+    {
+        "name": "list_documents",
+        "description": (
+            "List indexed documents (stable_ref, source, path, title, media_type, doc_no, url, "
+            "chunk_count) with filters and keyset pagination; pass next_cursor as cursor for the "
+            "next page. Trashed Drive files are hidden unless include_trashed."
+        ),
+        "inputSchema": _schema(
+            {
+                "source": {"type": "string"},
+                "folder": {"type": "string"},
+                "media_type": {"type": "string"},
+                "doc_type": {"type": "string", "description": "document code such as NĐ-CP, TT"},
+                "modified_after": {"type": "string"},
+                "modified_before": {"type": "string"},
+                "include_trashed": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+                "cursor": {"type": "string"},
+            }
         ),
     },
     {
@@ -152,6 +181,15 @@ READER_TOOLS = [
         "name": "job_status",
         "description": "Read filename-safe progress for one durable indexing job.",
         "inputSchema": _schema({"job_id": {"type": "string"}}, ["job_id"]),
+    },
+    {
+        "name": "refresh",
+        "description": (
+            "Queue one incremental reconcile for a source (or every enabled source). Never "
+            "full or reindex; limited to once per 60 s per source (rate_limited + "
+            "retry_after_seconds). Returns the job; poll job_status."
+        ),
+        "inputSchema": _schema({"source": {"type": "string"}}),
     },
     {
         "name": "sources",
@@ -247,7 +285,8 @@ REVIEWER_TOOLS = [
 ADMIN_TOOLS = [
     {
         "name": "relocate_source",
-        "description": "Relocate a local source index to an existing folder, then reconcile.",
+        "description": "Relocate a local source index to an existing folder, then reconcile."
+        + _sync_note("reconcile"),
         "inputSchema": _schema(
             {"source": {"type": "string"}, "new_path": {"type": "string"}},
             ["source", "new_path"],
@@ -278,7 +317,8 @@ ADMIN_TOOLS = [
     },
     {
         "name": "reconcile",
-        "description": "Incrementally reconcile one source or every enabled source.",
+        "description": "Incrementally reconcile one source or every enabled source."
+        + _sync_note("reconcile"),
         "inputSchema": _schema(
             {
                 "source": {"type": "string"},
@@ -289,7 +329,8 @@ ADMIN_TOOLS = [
     },
     {
         "name": "reindex",
-        "description": "Rebuild cached index state; reextract is explicit and defaults false.",
+        "description": "Rebuild cached index state; reextract is explicit and defaults false."
+        + _sync_note("reindex"),
         "inputSchema": _schema(
             {
                 "source": {"type": "string"},
@@ -335,7 +376,15 @@ class MCPServer:
                 tool
                 for tool in self.tools
                 if tool["name"]
-                not in {"sources", "doctor", "index_status", "job_status", "index_coverage"}
+                not in {
+                    "sources",
+                    "doctor",
+                    "index_status",
+                    "job_status",
+                    "index_coverage",
+                    "refresh",
+                    "list_documents",
+                }
             ]
         self.allowed = {tool["name"] for tool in self.tools}
 
@@ -433,6 +482,7 @@ class MCPServer:
                     int(values.get("length", 12000)),
                     values.get("around"),
                     int(values.get("window", 2000)),
+                    bool(values.get("include_trashed", False)),
                 )
             return self.service.read(
                 values["path"],
@@ -440,6 +490,19 @@ class MCPServer:
                 int(values.get("length", 12000)),
                 values.get("around"),
                 int(values.get("window", 2000)),
+                bool(values.get("include_trashed", False)),
+            )
+        if name == "list_documents":
+            return self.service.list_documents(
+                values.get("source"),
+                values.get("folder"),
+                values.get("media_type"),
+                values.get("doc_type"),
+                values.get("modified_after"),
+                values.get("modified_before"),
+                bool(values.get("include_trashed", False)),
+                int(values.get("limit", 50)),
+                values.get("cursor"),
             )
         if name == "index_coverage":
             return self.service.index_coverage(
@@ -456,6 +519,8 @@ class MCPServer:
             return self.service.index_status()
         if name == "job_status":
             return self.service.job_status(values["job_id"], reader=True)
+        if name == "refresh":
+            return self.service.refresh(values.get("source"))
         if name == "sources":
             return self.service.source_summary()
         if name == "metadata":
@@ -502,7 +567,11 @@ class MCPServer:
             )
         if name == "relocate_source":
             return self.service.start_index_job(
-                "relocate", values["source"], values["new_path"], background=False
+                "relocate",
+                values["source"],
+                values["new_path"],
+                background=False,
+                defer_to_daemon=False,
             )
         if name == "reconcile":
             return (
@@ -512,6 +581,7 @@ class MCPServer:
                     values.get("target"),
                     full=bool(values.get("full", False)),
                     background=False,
+                    defer_to_daemon=False,
                 )
                 if multi
                 else self.service.scan(values.get("target"))
@@ -542,6 +612,7 @@ class MCPServer:
                     reextract=bool(values.get("reextract", False)),
                     full=bool(values.get("all", False)),
                     background=False,
+                    defer_to_daemon=False,
                 )
                 if multi
                 else self.service.scan(
@@ -757,6 +828,36 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         )
 
     @server.tool(annotations=read_only)
+    def list_documents(
+        source: str | None = None,
+        folder: str | None = None,
+        media_type: str | None = None,
+        doc_type: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
+        include_trashed: bool = False,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """List indexed documents with filters; paginate by passing next_cursor as cursor."""
+        return _dict_result(
+            dispatcher.call(
+                "list_documents",
+                {
+                    "source": source,
+                    "folder": folder,
+                    "media_type": media_type,
+                    "doc_type": doc_type,
+                    "modified_after": modified_after,
+                    "modified_before": modified_before,
+                    "include_trashed": include_trashed,
+                    "limit": limit,
+                    "cursor": cursor,
+                },
+            )
+        )
+
+    @server.tool(annotations=read_only)
     def read(
         path: str,
         source: str | None = None,
@@ -764,6 +865,7 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
         length: int = 12000,
         around: int | None = None,
         window: int = 2000,
+        include_trashed: bool = False,
     ) -> dict[str, Any]:
         """Read cached text with source identity, authority, revision/hash, and provenance."""
         return _dict_result(
@@ -776,6 +878,7 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
                     "length": length,
                     "around": around,
                     "window": window,
+                    "include_trashed": include_trashed,
                 },
             )
         )
@@ -799,6 +902,22 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
     def job_status(job_id: str) -> dict[str, Any]:
         """Read filename-safe progress for one durable indexing job."""
         return _dict_result(dispatcher.call("job_status", {"job_id": job_id}))
+
+    @server.tool(
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=True,
+        )
+    )
+    def refresh(source: str | None = None) -> dict[str, Any]:
+        """Queue one incremental reconcile (never full or reindex); 60 s limit per source.
+
+        Returns the durable job (id, state, executor); poll job_status. A rate_limited result
+        carries retry_after_seconds.
+        """
+        return _dict_result(dispatcher.call("refresh", {"source": source}))
 
     @server.tool(annotations=read_only)
     def sources() -> dict[str, Any]:
@@ -954,7 +1073,10 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             target: str | None = None,
             full: bool = False,
         ) -> dict[str, Any]:
-            """Incrementally reconcile one source or every enabled source."""
+            """Incrementally reconcile one source or every enabled source.
+
+            Long runs can be lost if the connection drops; prefer start_reconcile + job_status.
+            """
             return _dict_result(
                 dispatcher.call("reconcile", {"source": source, "target": target, "full": full})
             )
@@ -966,7 +1088,10 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
             reextract: bool = False,
             all: bool = False,
         ) -> dict[str, Any]:
-            """Rebuild cached index state, optionally rerunning extraction/OCR."""
+            """Rebuild cached index state, optionally rerunning extraction/OCR.
+
+            Long runs can be lost if the connection drops; prefer start_reindex + job_status.
+            """
             return _dict_result(
                 dispatcher.call(
                     "reindex",
@@ -976,7 +1101,10 @@ def create_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> Any:
 
         @server.tool(annotations=indexing)
         def relocate_source(source: str, new_path: str) -> dict[str, Any]:
-            """Relocate a local index without moving authoritative files."""
+            """Relocate a local index without moving authoritative files.
+
+            Long runs can be lost if the connection drops; prefer start_reconcile + job_status.
+            """
             return _dict_result(
                 dispatcher.call("relocate_source", {"source": source, "new_path": new_path})
             )

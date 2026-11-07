@@ -9,6 +9,7 @@ import unicodedata
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -199,7 +200,41 @@ MIGRATIONS = [
     );
     CREATE INDEX document_validity_from_idx ON document_validity(effective_from);
     """,
+    """
+    CREATE TABLE daemon_heartbeat (
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+      pid INTEGER NOT NULL, hostname TEXT NOT NULL,
+      started_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL
+    );
+    """,
+    """
+    ALTER TABLE documents ADD COLUMN trashed_at TEXT;
+    CREATE INDEX documents_trashed_idx ON documents(trashed_at);
+    """,
+    """
+    ALTER TABLE chunks ADD COLUMN body_hash TEXT;
+    UPDATE chunks SET body_hash=chunk_hash;
+    CREATE INDEX chunks_body_hash_idx ON chunks(body_hash);
+    """,
+    """
+    UPDATE documents SET metadata_json=json_set(
+      metadata_json,
+      '$.layout_flags', json('["complex_layout"]'),
+      '$.layout_pages', json((SELECT json_group_array(page) FROM
+        (SELECT DISTINCT page FROM reviews r WHERE r.document_id=documents.id
+           AND r.reason='complex_layout' AND r.status='open' AND page IS NOT NULL
+         ORDER BY page))))
+    WHERE id IN (SELECT document_id FROM reviews
+                 WHERE reason='complex_layout' AND status='open' AND document_id IS NOT NULL);
+    UPDATE reviews SET status='resolved', resolution='migrated_to_layout_flag',
+                       updated_at=CURRENT_TIMESTAMP
+    WHERE reason='complex_layout' AND status='open';
+    """,
 ]
+
+
+class DocumentTrashedError(ValueError):
+    """The document exists but its Drive file is in the trash."""
 
 
 class Database:
@@ -283,7 +318,17 @@ class Database:
                 ).fetchone(),
             )
 
-    def resolve_document(self, path: str, source: str | None = None) -> sqlite3.Row:
+    def resolve_document(
+        self, path: str, source: str | None = None, include_trashed: bool = False
+    ) -> sqlite3.Row:
+        row = self._resolve_document(path, source)
+        if row["trashed_at"] and not include_trashed:
+            raise DocumentTrashedError(
+                "document_trashed: the Drive file is in the trash; it is hidden until restored"
+            )
+        return row
+
+    def _resolve_document(self, path: str, source: str | None = None) -> sqlite3.Row:
         stable_sql = ""
         stable_values: list[Any] = []
         if path.startswith("drive:"):
@@ -368,20 +413,20 @@ class Database:
     def source(self, value: str) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM sources WHERE id=? OR name=?", (value, value)
+                f"{_SOURCE_SELECT} WHERE s.id=? OR s.name=?", (value, value)
             ).fetchone()
         if row is None:
             raise ValueError(f"source not found: {value}")
-        return _row_json(row, ("config_json",))
+        return _source_json(row)
 
     def sources(self, enabled: bool | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
-            sql, values = "SELECT * FROM sources", []
+            sql, values = _SOURCE_SELECT, []
             if enabled is not None:
-                sql += " WHERE enabled=?"
+                sql += " WHERE s.enabled=?"
                 values.append(int(enabled))
-            rows = connection.execute(sql + " ORDER BY name", values).fetchall()
-        return [_row_json(row, ("config_json",)) for row in rows]
+            rows = connection.execute(sql + " ORDER BY s.name", values).fetchall()
+        return [_source_json(row) for row in rows]
 
     def set_source_enabled(self, value: str, enabled: bool) -> dict[str, Any]:
         source = self.source(value)
@@ -392,6 +437,39 @@ class Database:
             )
         return self.source(source["id"])
 
+    def update_source_config(self, value: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """Merge ``changes`` into one source's config_json (a None value removes the key)."""
+        source = self.source(value)
+        config = dict(source["config"])
+        for key, item in changes.items():
+            if item is None:
+                config.pop(key, None)
+            else:
+                config[key] = item
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE sources SET config_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (json.dumps(config), source["id"]),
+            )
+        return self.source(source["id"])
+
+    def sync_state(self, source_id: str, key: str) -> Any | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT value_json FROM source_sync_state WHERE source_id=? AND key=?",
+                (source_id, key),
+            ).fetchone()
+        return None if row is None else json.loads(row[0])
+
+    def set_sync_state(self, source_id: str, key: str, value: Any) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO source_sync_state(source_id,key,value_json) VALUES(?,?,?)
+                   ON CONFLICT(source_id,key) DO UPDATE SET value_json=excluded.value_json,
+                   updated_at=CURRENT_TIMESTAMP""",
+                (source_id, key, json.dumps(value)),
+            )
+
     def update_source_sync(
         self, source_id: str, cursor: str | None, error: str | None = None
     ) -> None:
@@ -401,6 +479,17 @@ class Database:
                    updated_at=CURRENT_TIMESTAMP WHERE id=?""",
                 (cursor, error, source_id),
             )
+            if error is None:
+                connection.execute(
+                    """INSERT INTO source_sync_state(source_id,key,value_json) VALUES(?,?,?)
+                       ON CONFLICT(source_id,key) DO UPDATE SET value_json=excluded.value_json,
+                       updated_at=CURRENT_TIMESTAMP""",
+                    (
+                        source_id,
+                        SUCCESS_KEY,
+                        json.dumps(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")),
+                    ),
+                )
 
     def purge_source(self, value: str) -> dict[str, Any]:
         source = self.source(value)
@@ -464,6 +553,70 @@ class Database:
             "vectors_purged": vectors_purged,
         }
 
+    def document_artifact_paths(
+        self, document_ids: Sequence[int] = (), source_id: str | None = None
+    ) -> set[str]:
+        """Extraction/correction/revision artifact files used by the given documents or source."""
+        values: list[Any]
+        if source_id is not None:
+            where, values = "d.source_id=?", [source_id]
+        elif document_ids:
+            where = f"d.id IN ({','.join('?' for _ in document_ids)})"
+            values = list(document_ids)
+        else:
+            return set()
+        with self.connect() as connection:
+            paths = {
+                str(path)
+                for row in connection.execute(
+                    f"SELECT artifact_path,effective_artifact_path FROM documents d WHERE {where}",
+                    values,
+                )
+                for path in (row["artifact_path"], row["effective_artifact_path"])
+                if path
+            }
+            paths.update(
+                str(row["artifact_path"])
+                for row in connection.execute(
+                    f"""SELECT rr.artifact_path FROM review_revisions rr
+                        JOIN documents d ON d.id=rr.document_id WHERE {where}""",
+                    values,
+                )
+                if row["artifact_path"]
+            )
+        return paths
+
+    def referenced_artifact_paths(self) -> set[str]:
+        with self.connect() as connection:
+            paths = {
+                str(path)
+                for row in connection.execute(
+                    "SELECT artifact_path,effective_artifact_path FROM documents"
+                )
+                for path in (row["artifact_path"], row["effective_artifact_path"])
+                if path
+            }
+            paths.update(
+                str(row[0])
+                for row in connection.execute("SELECT artifact_path FROM review_revisions")
+                if row[0]
+            )
+        return paths
+
+    def purge_orphan_vectors(self) -> int:
+        with self.transaction() as connection:
+            count = int(
+                connection.execute(
+                    """SELECT count(*) FROM vectors v WHERE NOT EXISTS
+                       (SELECT 1 FROM chunks c WHERE c.chunk_hash=v.chunk_hash)"""
+                ).fetchone()[0]
+            )
+            connection.execute(
+                """DELETE FROM vectors WHERE NOT EXISTS
+                   (SELECT 1 FROM chunks c WHERE c.chunk_hash=vectors.chunk_hash)"""
+            )
+        return count
+
     def stats(self) -> dict[str, int]:
         with self.connect() as connection:
             return {
@@ -471,7 +624,7 @@ class Database:
                 "chunks": connection.execute("SELECT count(*) FROM chunks").fetchone()[0],
                 "vectors": connection.execute("SELECT count(*) FROM vectors").fetchone()[0],
                 "open_reviews": connection.execute(
-                    "SELECT count(*) FROM reviews WHERE status='open'"
+                    "SELECT count(*) FROM reviews WHERE status='open' AND reason<>'complex_layout'"
                 ).fetchone()[0],
                 "review_revisions": connection.execute(
                     "SELECT count(*) FROM review_revisions"
@@ -671,6 +824,20 @@ class Database:
                     raise
                 source, path = reference.split(":", 1)
                 self.resolve_document(path, source)
+
+
+SUCCESS_KEY = "last_success_at"
+_SOURCE_SELECT = (
+    "SELECT s.*, (SELECT value_json FROM source_sync_state "
+    f"WHERE source_id=s.id AND key='{SUCCESS_KEY}') AS last_success_json FROM sources s"
+)
+
+
+def _source_json(row: sqlite3.Row) -> dict[str, Any]:
+    result = _row_json(row, ("config_json",))
+    raw = result.pop("last_success_json", None)
+    result["last_success_at"] = json.loads(raw) if raw else None
+    return result
 
 
 def _row_json(row: sqlite3.Row, json_fields: Sequence[str]) -> dict[str, Any]:

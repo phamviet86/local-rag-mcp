@@ -10,6 +10,7 @@ from typing import Any
 
 from .db import Database, stable_ref
 from .legal import find_numbers, make_key
+from .rawcache import raw_cache_matches
 
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 FIELDS = (
@@ -55,7 +56,9 @@ def status_on(row: Any, day: str) -> str:
     return "valid"
 
 
-def check_status(db: Database, path: str, on: str, source: str | None = None) -> dict[str, Any]:
+def check_status(
+    db: Database, path: str, on: str, source: str | None = None, cache_dir: Path | None = None
+) -> dict[str, Any]:
     """Validity, cited-expired warnings, duplicates and integrity for one document."""
     if not _DATE.fullmatch(on):
         raise ValueError("on must be YYYY-MM-DD")
@@ -84,7 +87,7 @@ def check_status(db: Database, path: str, on: str, source: str | None = None) ->
             target = connection.execute(
                 """SELECT d.id,d.doc_no,v.effective_from,v.effective_to FROM documents d
                    JOIN document_validity v ON v.document_id=d.id
-                   WHERE d.doc_no_key=? AND d.id<>?""",
+                   WHERE d.doc_no_key=? AND d.id<>? AND d.trashed_at IS NULL""",
                 (make_key(number), document["id"]),
             ).fetchone()
             if target is not None and status_on(target, on) == "expired":
@@ -96,7 +99,7 @@ def check_status(db: Database, path: str, on: str, source: str | None = None) ->
             for row in connection.execute(
                 """SELECT d.id,d.source_id,d.external_id,s.kind source_kind FROM documents d
                    JOIN sources s ON s.id=d.source_id
-                   WHERE d.content_hash=? AND d.id<>?""",
+                   WHERE d.content_hash=? AND d.id<>? AND d.trashed_at IS NULL""",
                 (document["content_hash"], document["id"]),
             )
         ]
@@ -106,8 +109,9 @@ def check_status(db: Database, path: str, on: str, source: str | None = None) ->
             row[0]
             for row in connection.execute(
                 """SELECT DISTINCT d.doc_no FROM chunks c JOIN documents d ON d.id=c.document_id
-                   WHERE d.id<>? AND d.content_hash<>? AND c.chunk_hash IN
-                     (SELECT chunk_hash FROM chunks WHERE document_id=?)""",
+                   WHERE d.id<>? AND d.content_hash<>? AND d.trashed_at IS NULL
+                     AND c.body_hash IN
+                     (SELECT body_hash FROM chunks WHERE document_id=?)""",
                 (document["id"], document["content_hash"], document["id"]),
             )
         ]
@@ -124,7 +128,7 @@ def check_status(db: Database, path: str, on: str, source: str | None = None) ->
         warnings.append("OCR_UNVERIFIED: some chunks come from OCR; open the original page")
     if open_reviews:
         warnings.append("OPEN_REVIEWS: pages await review")
-    integrity = _integrity(document)
+    integrity = _integrity(document, cache_dir)
     if integrity["sha256_matches"] is False:
         warnings.append("SOURCE_CHANGED: file hash differs from the indexed hash; reindex")
     return {
@@ -144,10 +148,13 @@ def check_status(db: Database, path: str, on: str, source: str | None = None) ->
     }
 
 
-def _integrity(document: Any) -> dict[str, Any]:
-    """Re-hash a local source file; Drive and missing files report ``None``/not-checked."""
+def _integrity(document: Any, cache_dir: Path | None = None) -> dict[str, Any]:
+    """Re-hash a local source file, or a Drive file's raw cache; otherwise not checked."""
     if document["source_kind"] != "local":
-        return {"sha256_matches": None, "checked": False}
+        matches = None if cache_dir is None else raw_cache_matches(cache_dir, document)
+        if matches is None:
+            return {"sha256_matches": None, "checked": False, "reason": "no_raw_cache"}
+        return {"sha256_matches": matches, "checked": True, "basis": "drive_raw_cache"}
     path = Path(document["path"])
     if not path.is_file():
         return {"sha256_matches": None, "checked": False, "reason": "file_missing"}

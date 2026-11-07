@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -203,6 +204,7 @@ class Indexer:
                 len(snapshots) - processed,
             )
         removed_ids = sorted(missing)
+        removed_artifacts = self.db.document_artifact_paths(removed_ids)
         try:
             with self.db.transaction() as connection:
                 for row, snapshot in moves:
@@ -231,6 +233,8 @@ class Indexer:
             report["errors"].append(f"index transaction: {error_fields('index', exc)}")
             self.db.update_source_sync(self.source_id, None, "local index transaction failed")
             return report
+        if removed_ids:
+            self.purge_derived(removed_artifacts)
         report["moved"] = len(moves)
         searchable = len(snapshots) - len(report["errors"])
         _progress(progress, "committed", len(snapshots), processed, searchable, 0)
@@ -248,7 +252,7 @@ class Indexer:
         )
         if missing_ocr:
             report["warnings"].append(
-                f"{missing_ocr} PDF page(s) require OCR and were added to the review queue"
+                f"{missing_ocr} PDF or image page(s) require OCR and were added to the review queue"
             )
         if report["errors"] or target is None:
             self.db.update_source_sync(
@@ -282,8 +286,15 @@ class Indexer:
         extracted, artifact = self._extract_cached(
             snapshot.path, content_hash, use_cache=not reextract
         )
-        chunks = _make_chunks(extracted, self.settings)
         automatic = _automatic_metadata(snapshot, extracted, content_hash)
+        chunks = _make_chunks(
+            extracted,
+            self.settings,
+            chunk_context(
+                str(automatic.get("title") or ""),
+                snapshot.path.relative_to(self.settings.root).as_posix(),
+            ),
+        )
         return PreparedDocument(snapshot, content_hash, extracted, artifact, chunks, automatic)
 
     def _prepare_cached_reindex(self, snapshot: FileSnapshot, current: Any) -> PreparedDocument:
@@ -295,8 +306,12 @@ class Indexer:
                 f"cached {kind} artifact is missing: {artifact}; rerun with --reextract"
             )
         extracted = _document_from_artifact(json.loads(artifact.read_text(encoding="utf-8")))
-        chunks = _make_chunks(extracted, self.settings)
         automatic = json.loads(current["metadata_json"])
+        chunks = _make_chunks(
+            extracted,
+            self.settings,
+            chunk_context(str(automatic.get("title") or ""), current["relative_path"]),
+        )
         if current["source_url"]:
             automatic.update(
                 {
@@ -485,7 +500,11 @@ class Indexer:
             content_hash,
             extracted,
             artifact_path,
-            _make_chunks(extracted, self.settings),
+            _make_chunks(
+                extracted,
+                self.settings,
+                chunk_context(str(metadata.get("title") or path.stem), relative_path),
+            ),
             metadata,
             relative_path=relative_path,
             external_id=external_id,
@@ -514,9 +533,9 @@ class Indexer:
             cite_key = make_cite_key(prefix, [chunk.cite_key or f"c{chunk.ordinal}"], taken)
             cursor = connection.execute(
                 """INSERT INTO chunks
-                   (document_id,ordinal,text,start_char,end_char,chunk_hash,provenance_json,
+                   (document_id,ordinal,text,start_char,end_char,chunk_hash,body_hash,provenance_json,
                     page_number,cite_key,section_path,page_start,page_end,ocr)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     document_id,
                     chunk.ordinal,
@@ -524,6 +543,7 @@ class Indexer:
                     chunk.start,
                     chunk.end,
                     chunk.chunk_hash,
+                    chunk.body_hash or chunk.chunk_hash,
                     json.dumps(chunk.provenance),
                     _chunk_page(chunk.provenance),
                     cite_key,
@@ -588,9 +608,18 @@ class Indexer:
         row = self.db.document(path.resolve(), self.source_id)
         if row is None:
             return False
+        artifacts = self.db.document_artifact_paths([int(row["id"])])
         with self.db.transaction() as connection:
             _delete_document(connection, int(row["id"]), self.db)
+        self.purge_derived(artifacts)
         return True
+
+    def purge_derived(self, candidates: set[str]) -> dict[str, int]:
+        """Drop extraction artifacts no document references any more, and orphaned vectors."""
+        return {
+            "artifacts_removed": remove_unreferenced_artifacts(self.db, self.settings, candidates),
+            "vectors_purged": self.db.purge_orphan_vectors(),
+        }
 
     def move(self, source: Path, destination: Path) -> bool:
         source, destination = source.resolve(), destination.resolve()
@@ -674,7 +703,11 @@ class Indexer:
         temporary.write_text(json.dumps(effective, ensure_ascii=False), encoding="utf-8")
         temporary.replace(artifact)
         extracted = _document_from_artifact(effective)
-        chunks = _make_chunks(extracted, self.settings)
+        chunks = _make_chunks(
+            extracted,
+            self.settings,
+            chunk_context(review["title"], review["relative_path"]),
+        )
         with self.db.connect() as connection:
             document_metadata = json.loads(
                 connection.execute(
@@ -743,6 +776,8 @@ class Indexer:
         artifact = self.settings.extracted_dir / f"{content_hash}{variant}.json"
         if use_cache and artifact.exists():
             payload = json.loads(artifact.read_text(encoding="utf-8"))
+            with contextlib.suppress(OSError):
+                os.utime(artifact)  # Keep the cleanup age guard meaningful for reused files.
             return _document_from_artifact(payload), artifact
         extracted = self.extractor.extract(path)
         payload = {
@@ -792,6 +827,19 @@ def _progress(
         )
 
 
+def remove_unreferenced_artifacts(db: Database, settings: Settings, candidates: set[str]) -> int:
+    """Unlink candidate artifact files under the app home that no document still points to."""
+    removed = 0
+    referenced = db.referenced_artifact_paths() if candidates else set()
+    home = settings.home.resolve()
+    for value in candidates - referenced:
+        artifact = Path(value).resolve()
+        if home == artifact or home in artifact.parents:
+            artifact.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
 def _delete_chunks(connection: Any, document_id: int) -> None:
     ids = [
         row[0]
@@ -829,7 +877,14 @@ def _file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _chunks(document: ExtractedDocument, size: int, overlap: int) -> list[ChunkRecord]:
+def chunk_context(title: str | None, relative_path: str | None) -> str:
+    """Context line prefixed to window chunks, in the ``a | b`` format split_markdown uses."""
+    return " | ".join(part for part in (title, relative_path) if part)
+
+
+def _chunks(
+    document: ExtractedDocument, size: int, overlap: int, context: str = ""
+) -> list[ChunkRecord]:
     chunks: list[ChunkRecord] = []
     start, length = 0, len(document.text)
     while start < length:
@@ -852,14 +907,17 @@ def _chunks(document: ExtractedDocument, size: int, overlap: int) -> list[ChunkR
                 for span in document.spans
                 if span.end > chunk_start and span.start < chunk_end
             ]
+            # start/end keep pointing at the body; only the stored text carries the context.
+            stored = f"{context}\n{text}" if context else text
             chunks.append(
                 ChunkRecord(
                     len(chunks),
-                    text,
+                    stored,
                     chunk_start,
                     chunk_end,
-                    hashlib.sha256(text.encode()).hexdigest(),
+                    hashlib.sha256(stored.encode()).hexdigest(),
                     provenance,
+                    body_hash=hashlib.sha256(text.encode()).hexdigest(),
                 )
             )
         if end >= length:
@@ -892,19 +950,25 @@ def _annotate(document: ExtractedDocument, chunk: ChunkRecord) -> ChunkRecord:
     return replace(chunk, page_start=start, page_end=end, ocr=ocr)
 
 
-def _make_chunks(document: ExtractedDocument, settings: Settings) -> list[ChunkRecord]:
+def _make_chunks(
+    document: ExtractedDocument, settings: Settings, context: str = ""
+) -> list[ChunkRecord]:
     """Structure-aware chunks when configured and the text has structure, else windows."""
     if settings.chunk_strategy == "structure":
-        structured = _chunks_structured(document, settings.structure_max_chars)
+        structured = _chunks_structured(
+            document, settings.structure_max_chars, settings.legal_chunking
+        )
         if structured:
             return structured
     return [
         replace(_annotate(document, chunk), cite_key=f"c{chunk.ordinal}")
-        for chunk in _chunks(document, settings.chunk_chars, settings.chunk_overlap)
+        for chunk in _chunks(document, settings.chunk_chars, settings.chunk_overlap, context)
     ]
 
 
-def _chunks_structured(document: ExtractedDocument, max_chars: int) -> list[ChunkRecord]:
+def _chunks_structured(
+    document: ExtractedDocument, max_chars: int, legal: bool = True
+) -> list[ChunkRecord]:
     """One chunk per Điều (or Markdown section); cite_key holds the suffix after ``#``."""
     doc_no = detect_doc_no(document)
     first = next((s for s in document.spans if s.kind == "pdf_page"), None)
@@ -913,8 +977,10 @@ def _chunks_structured(document: ExtractedDocument, max_chars: int) -> list[Chun
     sections: list[Section]
     if document.media_type == "text/markdown":
         sections = split_markdown(document.text, doc_no, name)
-    else:
+    elif legal:
         sections = split_sections(document.text, doc_no, name, max_chars)
+    else:
+        return []
     chunks: list[ChunkRecord] = []
     for section in sections:
         provenance = [
@@ -971,12 +1037,20 @@ def _automatic_metadata(
 
 
 def _document_from_artifact(payload: dict[str, Any]) -> ExtractedDocument:
+    metadata = dict(payload.get("metadata", {}))
+    reviews = payload.get("reviews", [])
+    layout = [review for review in reviews if review.get("reason") == "complex_layout"]
+    if layout:
+        # Artifacts written before layout became a flag: never re-queue it as a review.
+        reviews = [review for review in reviews if review.get("reason") != "complex_layout"]
+        metadata.setdefault("layout_flags", ["complex_layout"])
+        metadata.setdefault("layout_pages", sorted({review.get("page") for review in layout}))
     return ExtractedDocument(
         payload["text"],
         [SourceSpan(**span) for span in payload["spans"]],
         payload["media_type"],
-        payload.get("metadata", {}),
-        payload.get("reviews", []),
+        metadata,
+        reviews,
     )
 
 

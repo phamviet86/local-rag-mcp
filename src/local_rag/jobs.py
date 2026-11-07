@@ -1,13 +1,94 @@
 from __future__ import annotations
 
+import os
+import socket
 import threading
+import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from .db import Database
 
 ACTIVE_STATES = ("queued", "running")
+QUEUED_EXPIRY_SQL = "-20 minutes"
+DAEMON_MAX_AGE_SECONDS = 30.0
+SWEEP_INTERVAL_SECONDS = 60.0
+_ISO_Z = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _utc_text(moment: datetime) -> str:
+    return moment.astimezone(UTC).strftime(_ISO_Z)
+
+
+def parse_utc(value: str) -> datetime:
+    """Parse SQLite CURRENT_TIMESTAMP text or a UTC ISO 8601 'Z' string into an aware datetime."""
+    text = str(value).strip()
+    if text.endswith("Z"):
+        return datetime.strptime(text, _ISO_Z).replace(tzinfo=UTC)
+    return datetime.strptime(text[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+
+
+def iso_z(value: str | None) -> str | None:
+    """Normalise a stored UTC timestamp to ISO 8601 with a 'Z' suffix (None stays None)."""
+    if not value:
+        return None
+    try:
+        return _utc_text(parse_utc(value))
+    except ValueError:
+        return None
+
+
+def write_daemon_heartbeat(
+    db: Database, started_at: datetime, *, now: datetime | None = None
+) -> None:
+    """Upsert the single serve-daemon heartbeat row (UTC ISO 8601 with Z)."""
+    moment = now or datetime.now(UTC)
+    with db.connect() as connection:
+        connection.execute(
+            """INSERT INTO daemon_heartbeat(singleton,pid,hostname,started_at,heartbeat_at)
+               VALUES(1,?,?,?,?)
+               ON CONFLICT(singleton) DO UPDATE SET pid=excluded.pid,
+                 hostname=excluded.hostname,started_at=excluded.started_at,
+                 heartbeat_at=excluded.heartbeat_at""",
+            (os.getpid(), socket.gethostname(), _utc_text(started_at), _utc_text(moment)),
+        )
+
+
+def daemon_info(
+    db: Database,
+    max_age: float = DAEMON_MAX_AGE_SECONDS,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Return the live daemon record, or None when no heartbeat is fresh enough."""
+    with db.connect() as connection:
+        row = connection.execute("SELECT * FROM daemon_heartbeat WHERE singleton=1").fetchone()
+    if row is None:
+        return None
+    try:
+        beat = datetime.strptime(str(row["heartbeat_at"]), _ISO_Z).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    moment = now or datetime.now(UTC)
+    if (moment - beat).total_seconds() > max_age:
+        return None
+    return {
+        "pid": int(row["pid"]),
+        "hostname": str(row["hostname"]),
+        "started_at": str(row["started_at"]),
+        "heartbeat_at": str(row["heartbeat_at"]),
+    }
+
+
+def daemon_alive(
+    db: Database,
+    max_age: float = DAEMON_MAX_AGE_SECONDS,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    return daemon_info(db, max_age, now=now) is not None
 
 
 class IndexJobManager:
@@ -16,6 +97,7 @@ class IndexJobManager:
     def __init__(self, database: Database):
         self.db = database
         self._threads: dict[str, threading.Thread] = {}
+        self._last_sweep = 0.0
 
     def enqueue(
         self,
@@ -30,15 +112,7 @@ class IndexJobManager:
             raise ValueError("job kind must be reconcile, reindex or relocate")
         identifier = uuid.uuid4().hex
         with self.db.transaction() as connection:
-            connection.execute(
-                """UPDATE index_jobs SET state='error',phase='error',
-                   error='writer heartbeat expired',completed_at=CURRENT_TIMESTAMP
-                   WHERE state='running' AND heartbeat_at < datetime('now','-20 minutes')"""
-            )
-            connection.execute(
-                """UPDATE index_writer_lease SET job_id=NULL
-                   WHERE job_id IN (SELECT id FROM index_jobs WHERE state='error')"""
-            )
+            self._expire_stale(connection)
             active = connection.execute(
                 """SELECT * FROM index_jobs WHERE state IN ('queued','running')
                    ORDER BY created_at,id LIMIT 1"""
@@ -83,6 +157,72 @@ class IndexJobManager:
             ).fetchone()
         return _job(row, reader=False)
 
+    @staticmethod
+    def _expire_stale(connection: Any) -> None:
+        connection.execute(
+            """UPDATE index_jobs SET state='error',phase='error',
+               error='writer heartbeat expired',completed_at=CURRENT_TIMESTAMP
+               WHERE state='running' AND heartbeat_at < datetime('now','-20 minutes')"""
+        )
+        connection.execute(
+            """UPDATE index_jobs SET state='error',phase='error',
+               error='queued job was never started',completed_at=CURRENT_TIMESTAMP
+               WHERE state='queued' AND created_at < datetime('now',?)""",
+            (QUEUED_EXPIRY_SQL,),
+        )
+        connection.execute(
+            """UPDATE index_writer_lease SET job_id=NULL
+               WHERE job_id IN (SELECT id FROM index_jobs WHERE state='error')"""
+        )
+
+    def next_queued(self, *, monotonic: Callable[[], float] = time.monotonic) -> str | None:
+        """Oldest queued job id when no job is running; None otherwise.
+
+        The idle path is a read-only SELECT. The write transaction (with the expiry sweep) is
+        taken only when a queued job exists or the sweep is due (at most every 60 seconds).
+        """
+        now = monotonic()
+        with self.db.connect() as connection:
+            queued = connection.execute(
+                "SELECT 1 FROM index_jobs WHERE state='queued' LIMIT 1"
+            ).fetchone()
+        if queued is None and now - self._last_sweep < SWEEP_INTERVAL_SECONDS:
+            return None
+        self._last_sweep = now
+        with self.db.transaction() as connection:
+            self._expire_stale(connection)
+            running = connection.execute(
+                "SELECT 1 FROM index_jobs WHERE state='running' LIMIT 1"
+            ).fetchone()
+            if running is not None:
+                return None
+            row = connection.execute(
+                """SELECT id FROM index_jobs WHERE state='queued'
+                   ORDER BY created_at,id LIMIT 1"""
+            ).fetchone()
+        return str(row["id"]) if row is not None else None
+
+    def latest_reconcile(self, names: Sequence[str] | None = None) -> dict[str, Any] | None:
+        """Newest non-rejected whole-source reconcile job, as ``{id,source,state,created_at}``.
+
+        With ``names`` only jobs for those sources (or for every source) count; with None any
+        source counts. File-event jobs (those with a target) are ignored.
+        """
+        sql = (
+            "SELECT id,source,state,created_at FROM index_jobs "
+            "WHERE kind='reconcile' AND state!='rejected' AND target IS NULL"
+        )
+        values: list[str] = []
+        if names is not None:
+            placeholders = ",".join("?" for _ in names)
+            sql += f" AND (source IS NULL OR source IN ({placeholders}))"
+            values.extend(names)
+        with self.db.connect() as connection:
+            row = connection.execute(
+                sql + " ORDER BY created_at DESC,id DESC LIMIT 1", values
+            ).fetchone()
+        return None if row is None else dict(row)
+
     def run(
         self,
         job_id: str,
@@ -93,7 +233,7 @@ class IndexJobManager:
             row = connection.execute("SELECT * FROM index_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
                 raise ValueError(f"job not found: {job_id}")
-            if row["state"] not in ACTIVE_STATES:
+            if row["state"] != "queued":
                 return _job(row, reader=False)
             lease = connection.execute(
                 "SELECT job_id FROM index_writer_lease WHERE singleton=1"

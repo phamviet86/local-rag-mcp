@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import math
 import re
@@ -14,9 +16,11 @@ from .config import Settings
 from .db import Database, fts_fold, stable_ref
 from .embeddings import EmbeddingProvider, cache_identity
 from .legal import is_number_query, make_key
+from .rerank import Reranker
 
 SEARCH_MODES = ("full_text", "semantic", "hybrid")
 MATCH_MODES = ("any", "all", "phrase", "auto")
+READ_MAX_CHARS = 40000
 
 
 class SemanticSearchUnavailable(RuntimeError):
@@ -30,10 +34,12 @@ class SearchEngine:
         database: Database,
         embeddings: EmbeddingProvider | None = None,
         query_cache_size: int = 128,
+        reranker: Reranker | None = None,
     ):
         self.settings = settings
         self.db = database
         self.embeddings = embeddings
+        self.reranker = reranker
         self.query_cache_size = query_cache_size
         self._query_cache: OrderedDict[tuple[str, str, str], Sequence[float]] = OrderedDict()
         self._cache_lock = threading.Lock()
@@ -73,6 +79,9 @@ class SearchEngine:
         filters = (media_type, modified_after, modified_before, doc_type, valid_on)
         _filter_sql(relative_scope, source, *filters)  # Validate even for an empty index.
         warnings: list[str] = []
+        output_limit = limit
+        if self.reranker is not None:
+            limit = max(limit, self.settings.rerank_top_n)  # candidate pool for the reranker
         lexical = (
             self._full_text(
                 terms, relative_scope, source, limit, filters, "all" if match == "auto" else match
@@ -102,10 +111,13 @@ class SearchEngine:
         if mode == "hybrid" and not semantic:
             effective_mode = "full_text"
         results = self._combine(lexical, semantic, limit, effective_mode)
+        results = self._rerank(query, results, warnings)
         results = self._prioritize_document_number(
-            results, query, doc_no, relative_scope, source, filters, limit
+            results, query, doc_no, relative_scope, source, filters, output_limit
         )
-        results = self._diversify(results, per_document, limit, relative_scope, source, filters)
+        results = self._diversify(
+            results, per_document, output_limit, relative_scope, source, filters
+        )
         return {
             "mode": mode,
             "match": requested_match,
@@ -116,6 +128,41 @@ class SearchEngine:
             "warnings": warnings,
             "results": results,
         }
+
+    def _rerank(
+        self, query: str, results: list[dict[str, Any]], warnings: list[str]
+    ) -> list[dict[str, Any]]:
+        """Reorder the top candidates with a cross-encoder over each chunk's full text."""
+        # `_full_text` carries the untruncated chunk text (result text is cut to 1200 chars).
+        full_texts = [str(item.pop("_full_text", item["text"])) for item in results]
+        reranker = self.reranker
+        if reranker is None or len(results) < 2:
+            return results
+        count = self.settings.rerank_top_n
+        head, tail = results[:count], results[count:]
+        texts = full_texts[:count]
+        try:
+            scores = reranker.rerank(query, texts)
+            if len(scores) != len(head):
+                raise RuntimeError("reranker returned an unexpected score count")
+        except Exception as exc:
+            warnings.append(f"rerank unavailable; keeping original order: {exc}")
+            return results
+        order = sorted(range(len(head)), key=lambda i: (-float(scores[i]), i))
+        top = max(float(item["score"]) for item in head)
+        floor = float(tail[0]["score"]) if tail else 0.0
+        count = len(head)
+        # Spread head scores over (floor, top] in the new order; the last head item stays
+        # strictly above the first untouched tail item.
+        span = max(top - floor, count * 1e-6)
+        reordered = []
+        for position, index in enumerate(order):
+            item = head[index]
+            item["reranked"] = True
+            item["rerank_score"] = round(float(scores[index]), 6)
+            item["score"] = round(floor + span * (count - position) / count, 6)
+            reordered.append(item)
+        return [*reordered, *tail]
 
     def _full_text(
         self,
@@ -392,6 +439,10 @@ class SearchEngine:
             else:
                 score = lexical_score
             result = self._result(entry, score)
+            row = entry["row"]
+            result["_full_text"] = (
+                f"{row['kind']}: {row['content']}" if "text" not in row.keys() else row["text"]  # noqa: SIM118
+            )
             if "#phu-luc" in str(result["cite_key"]):
                 result["score"] = round(result["score"] * 0.85, 6)  # forms rank below articles
             output.append(result)
@@ -410,7 +461,7 @@ class SearchEngine:
         seen: set[str] = set()
         selected = []
         for result in results:
-            key = result["chunk_hash"]
+            key = result["body_hash"]
             if key and key in seen:
                 continue
             if counts[result["stable_ref"]] >= per_document:
@@ -426,16 +477,16 @@ class SearchEngine:
         filter_sql, values = _filter_sql(scope, source, *filters)
         with self.db.connect() as connection:
             for result in selected:
-                if not result["chunk_hash"]:
+                if not result["body_hash"]:
                     continue
                 rows = connection.execute(
                     f"""SELECT c.*,d.relative_path,d.title,d.content_hash,d.metadata_json,
                         d.source_id,d.external_id,d.source_url,d.indexed_at,d.modified_ns,d.doc_no,
                         s.name source_name,s.kind source_kind FROM chunks c
                         JOIN documents d ON d.id=c.document_id JOIN sources s ON s.id=d.source_id
-                        WHERE c.chunk_hash=? AND s.enabled=1 {filter_sql}
+                        WHERE c.body_hash=? AND s.enabled=1 {filter_sql}
                         ORDER BY d.id,c.ordinal""",
-                    [result["chunk_hash"], *values],
+                    [result["body_hash"], *values],
                 ).fetchall()
                 result["locations"] = [
                     {
@@ -474,6 +525,7 @@ class SearchEngine:
 
         ocr = bool(chunk_field("ocr"))
         raw_path = chunk_field("section_path")
+        metadata = json.loads(row["metadata_json"])
         return {
             "cite_key": chunk_field("cite_key"),
             "page_start": chunk_field("page_start"),
@@ -490,6 +542,7 @@ class SearchEngine:
             "document_ref": f"{row['source_name']}:{row['relative_path']}",
             "stable_ref": stable_ref(row),
             "chunk_hash": None if is_metadata else row["chunk_hash"],
+            "body_hash": None if is_metadata else row["body_hash"] or row["chunk_hash"],
             "chunk_ordinal": None if is_metadata else row["ordinal"],
             "start_char": None if is_metadata else row["start_char"],
             "end_char": None if is_metadata else row["end_char"],
@@ -521,7 +574,8 @@ class SearchEngine:
                 "doc_no": row["doc_no"] if "doc_no" in keys else None,
                 "locators": [item.get("locator") for item in concise_provenance],
             },
-            "metadata": json.loads(row["metadata_json"]),
+            "layout_flags": metadata.get("layout_flags", []),
+            "metadata": metadata,
         }
 
     def _relative_scope(self, scope: str | None) -> str | None:
@@ -563,8 +617,8 @@ class SearchEngine:
         with self.db.connect() as connection:
             if cite_key:
                 rows = connection.execute(
-                    f"{columns} WHERE c.cite_key=? AND s.enabled=1 {source_sql} "
-                    "ORDER BY d.id,c.ordinal",
+                    f"{columns} WHERE c.cite_key=? AND s.enabled=1 "
+                    f"AND d.trashed_at IS NULL {source_sql} ORDER BY d.id,c.ordinal",
                     [cite_key, *source_values],
                 ).fetchall()
                 if not rows:
@@ -580,7 +634,8 @@ class SearchEngine:
                     raise ValueError("ordinal must be a nonnegative integer")
                 document = self.db.resolve_document(str(document_ref), source)
                 found = connection.execute(
-                    f"{columns} WHERE c.document_id=? AND c.ordinal=? AND s.enabled=1",
+                    f"{columns} WHERE c.document_id=? AND c.ordinal=? AND s.enabled=1 "
+                    "AND d.trashed_at IS NULL",
                     [document["id"], ordinal],
                 ).fetchone()
                 if found is None:
@@ -616,12 +671,13 @@ class SearchEngine:
         source: str | None = None,
         around: int | None = None,
         window: int = 2000,
+        include_trashed: bool = False,
     ) -> dict[str, Any]:
-        if start < 0 or not 1 <= length <= 100000:
-            raise ValueError("start must be nonnegative and length must be 1..100000")
-        if around is not None and (around < 0 or not 1 <= window <= 100000):
-            raise ValueError("around must be nonnegative and window must be 1..100000")
-        document = self.db.resolve_document(path, source)
+        if start < 0 or not 1 <= length <= READ_MAX_CHARS:
+            raise ValueError(f"start must be nonnegative and length must be 1..{READ_MAX_CHARS}")
+        if around is not None and (around < 0 or not 1 <= window <= READ_MAX_CHARS):
+            raise ValueError(f"around must be nonnegative and window must be 1..{READ_MAX_CHARS}")
+        document = self.db.resolve_document(path, source, include_trashed)
         artifact = document["effective_artifact_path"] or document["artifact_path"]
         payload = json.loads(Path(artifact).read_text(encoding="utf-8"))
         if around is not None:
@@ -629,7 +685,8 @@ class SearchEngine:
                 raise ValueError("around exceeds indexed text length")
             start = max(0, around - window // 2)
             length = window
-        end = min(len(payload["text"]), start + length)
+        total_chars = len(payload["text"])
+        end = min(total_chars, start + length)
         spans = [span for span in payload["spans"] if span["end"] > start and span["start"] < end]
         source_name = str(document["source_name"])
         source_kind = str(document["source_kind"])
@@ -650,10 +707,99 @@ class SearchEngine:
             "text": payload["text"][start:end],
             "start": start,
             "end": end,
-            "total_chars": len(payload["text"]),
+            "next_start": end if end < total_chars else None,
+            "total_chars": total_chars,
             "provenance": spans,
             "has_review_corrections": bool(document["effective_artifact_path"]),
+            "layout_flags": json.loads(document["metadata_json"]).get("layout_flags", []),
+            "layout_pages": json.loads(document["metadata_json"]).get("layout_pages", []),
+            **({"trashed_at": document["trashed_at"]} if document["trashed_at"] else {}),
         }
+
+    def list_documents(
+        self,
+        source: str | None = None,
+        folder: str | None = None,
+        media_type: str | None = None,
+        doc_type: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
+        include_trashed: bool = False,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """List indexed documents with stable keyset pagination ordered by (source_id, id)."""
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        after = _decode_cursor(cursor) if cursor else None
+        filters, values = _filter_sql(
+            self._relative_scope(folder),
+            source,
+            media_type,
+            modified_after,
+            modified_before,
+            doc_type,
+            include_trashed=include_trashed,
+        )
+        base = "FROM documents d JOIN sources s ON s.id=d.source_id WHERE s.enabled=1 " + filters
+        page_sql, page_values = "", []
+        if after:
+            page_sql = " AND (d.source_id>? OR (d.source_id=? AND d.id>?))"
+            page_values = [after[0], after[0], after[1]]
+        with self.db.connect() as connection:
+            total = connection.execute(f"SELECT count(*) {base}", values).fetchone()[0]
+            rows = connection.execute(
+                "SELECT d.*,s.name source_name,s.kind source_kind,"
+                "(SELECT count(*) FROM chunks c WHERE c.document_id=d.id) chunk_count "
+                f"{base}{page_sql} ORDER BY d.source_id,d.id LIMIT ?",
+                [*values, *page_values, limit + 1],
+            ).fetchall()
+        page = rows[:limit]
+        next_cursor = (
+            _encode_cursor(page[-1]["source_id"], page[-1]["id"]) if len(rows) > limit else None
+        )
+        return {
+            "documents": [_listing_item(row) for row in page],
+            "next_cursor": next_cursor,
+            "total": total,
+        }
+
+
+def _encode_cursor(source_id: str, document_id: int) -> str:
+    raw = json.dumps({"s": source_id, "i": document_id}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> tuple[str, int]:
+    try:
+        data = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+        if isinstance(data, dict) and isinstance(data["s"], str) and type(data["i"]) is int:
+            return data["s"], data["i"]
+    except (ValueError, KeyError, binascii.Error):
+        pass
+    raise ValueError("invalid cursor: restart the listing without a cursor")
+
+
+def _iso_utc(value: str | None) -> str | None:
+    if value and re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", value):
+        return value.replace(" ", "T") + "Z"
+    return value
+
+
+def _listing_item(row: Any) -> dict[str, Any]:
+    return {
+        "stable_ref": stable_ref(row),
+        "source": row["source_name"],
+        "path": row["relative_path"],
+        "title": row["title"],
+        "media_type": row["media_type"],
+        "doc_no": row["doc_no"],
+        "url": row["source_url"],
+        "indexed_at": _iso_utc(row["indexed_at"]),
+        "source_modified_at": _source_modified_at(row),
+        "trashed": bool(row["trashed_at"]),
+        "chunk_count": row["chunk_count"],
+    }
 
 
 def _scope_sql(scope: str | None, column: str) -> tuple[str, list[str]]:
@@ -671,8 +817,10 @@ def _filter_sql(
     modified_before: str | None = None,
     doc_type: str | None = None,
     valid_on: str | None = None,
+    *,
+    include_trashed: bool = False,
 ) -> tuple[str, list[str]]:
-    clauses: list[str] = []
+    clauses: list[str] = [] if include_trashed else ["AND d.trashed_at IS NULL"]
     values: list[str] = []
     if doc_type:
         clauses.append("AND ('-' || d.doc_no_key || '-') LIKE ?")

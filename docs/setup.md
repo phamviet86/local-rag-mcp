@@ -8,7 +8,7 @@ The product and commands are `local-rag-mcp`, but its Python distribution is
 
 ## Agent-driven setup
 
-The v0.9.0 wheel bundles `local-rag-setup` and `local-rag` skills.
+The v0.11.0 wheel bundles `local-rag-setup` and `local-rag` skills.
 Follow the [agent install instructions](../README.md#install-with-an-agent)
 to install the package and run `install-skills`. The setup agent reads the installed skill at the
 absolute path reported by that command, inspects existing sources/configuration, requests only
@@ -72,7 +72,7 @@ local-rag-mcp source add-local engineering /srv/engineering --exclude archive --
 
 ## Add a Google Drive source (optional)
 
-Install the `google-drive` extra from the v0.9.0 release wheel when it is needed. OAuth provisioning
+Install the `google-drive` extra from the v0.11.0 release wheel when it is needed. OAuth provisioning
 happens only on the operator's machine and is intentionally unavailable through MCP.
 
 Before running the commands below, the operator must use a Google Cloud project to enable the Google
@@ -84,9 +84,9 @@ downloaded client JSON and resulting token in a protected operator-controlled lo
 attach, paste, or relay their contents to an agent.
 
 ```bash
-# v0.9.0 GitHub Release wheel
+# v0.11.0 GitHub Release wheel
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.9.0/phamviet_local_rag_mcp-0.9.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
 
 local-rag-mcp auth-google \
   --client-secret /secure/google-desktop-client.json \
@@ -97,10 +97,39 @@ local-rag-mcp source add-drive work-drive GOOGLE_DRIVE_FOLDER_ID \
 local-rag-mcp sync --source work-drive --full
 ```
 
+### Service account (no browser consent)
+
+For servers without a browser, a Google service account can read a folder instead of a user's OAuth
+token. In Google Cloud enable the Drive API, create a service account, and download a JSON key to a
+protected path (mode `0600`; never paste its contents anywhere). **Share the Drive folder (or shared
+drive) with the service account's email address as Viewer**, then register it:
+
+```bash
+chmod 600 /secure/service-account.json
+local-rag-mcp source add-drive work-drive GOOGLE_DRIVE_FOLDER_ID \
+  --account robot@my-project.iam.gserviceaccount.com \
+  --service-account-key /secure/service-account.json
+local-rag-mcp sync --source work-drive --full
+```
+
+`--service-account-key` and `--token-file` are mutually exclusive. Only the key path is stored, and
+it is hidden from `sources`/`status`. It is not verified whether `changes.list` reports files that
+were merely shared with the service account (rather than owned by it); the scheduled full scan (every
+12 hours by default, see `source set --full-reconcile-seconds`) is the safety net, and `refresh` plus
+`sync --full` catch up sooner.
+
 Use a client configured for the Google Drive read-only scope and keep its secret/token outside this
 repository. Never paste their contents into chat, issue reports, unit files, or logs. The registry
 stores a token path, not its contents; source/status responses redact the token path for reader
 tools.
+
+## Optional reranker
+
+A local cross-encoder can reorder the top search candidates. It is off by default and needs no
+network once the model is cached. Install the extra (`pip install 'phamviet-local-rag-mcp[rerank]'`)
+and set `rerank_provider` to `local` in `config.json` (or `LOCAL_RAG_MCP_RERANK_PROVIDER=local`).
+`rerank_model` defaults to `BAAI/bge-reranker-v2-m3` and `rerank_top_n` to 30. `doctor` warns and
+search keeps working in its original order if the dependency or model is unavailable.
 
 ## Optional embeddings
 
@@ -109,9 +138,9 @@ warning if embeddings are unavailable, while `semantic` fails clearly. Local emb
 remote providers are both opt-in.
 
 ```bash
-# v0.9.0 GitHub Release wheel
+# v0.11.0 GitHub Release wheel
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.9.0/phamviet_local_rag_mcp-0.9.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
 export LOCAL_RAG_MCP_EMBEDDING_PROVIDER=local
 export LOCAL_RAG_MCP_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 local-rag-mcp doctor --json
@@ -205,8 +234,8 @@ local-rag-mcp --home "$DATA_ROOT" service uninstall
 ```
 
 The service is a macOS LaunchAgent or Linux systemd user service. It watches enabled local roots and
-reconciles enabled sources every 600 seconds by default. Generated service definitions deliberately
-do not copy OAuth tokens or remote embedding API keys. If remote embeddings are required, the
+reconciles each enabled source on its own `poll_seconds` timer (Drive 300, local 600 by default;
+see `local-rag-mcp source set`). Generated service definitions deliberately do not copy OAuth tokens or remote embedding API keys. If remote embeddings are required, the
 operator must supply them through a protected platform mechanism (or the protected JSON
 file above); otherwise full-text indexing remains supported. A normal setup does not opt into this
 service.

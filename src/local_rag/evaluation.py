@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -47,19 +48,34 @@ def _rank(results: list[dict[str, Any]], gold: list[str]) -> int | None:
     return None
 
 
+def _ndcg(results: list[dict[str, Any]], gold: list[str]) -> float:
+    """Binary nDCG@10 over all gold keys; each gold key is credited by at most one result."""
+    remaining = list(gold)
+    dcg = 0.0
+    for position, result in enumerate(results[:10]):
+        match = next((key for key in remaining if _matches(result.get("cite_key"), key)), None)
+        if match is not None:
+            remaining.remove(match)
+            dcg += 1 / math.log2(position + 2)
+    ideal = sum(1 / math.log2(i + 2) for i in range(min(len(gold), 10)))
+    return dcg / ideal if ideal else 0.0
+
+
 def evaluate(
     questions: list[dict[str, Any]],
     search: Callable[[str], list[dict[str, Any]]],
     exists: Callable[[str], bool],
 ) -> dict[str, Any]:
-    """Run each question, report recall@1/3/10 overall and by type, and failure groups."""
+    """Run each question; report recall@1/3/10, MRR@10, nDCG@10 and failure groups."""
     ranks: list[int | None] = []
+    gains: list[float] = []
     misses: list[dict[str, Any]] = []
     for item in questions:
         gold = list(item["gold"])
         results = search(str(item["question"]))
         rank = _rank(results, gold)
         ranks.append(rank)
+        gains.append(_ndcg(results, gold))
         if rank is not None and rank <= max(KS):
             continue
         if rank is not None:
@@ -86,6 +102,13 @@ def evaluate(
         hits = sum(1 for i in indices if ranks[i] is not None and (ranks[i] or 0) <= k)
         return round(hits / len(indices), 4) if indices else 0.0
 
+    def mrr(indices: list[int]) -> float:
+        total = sum(1 / (ranks[i] or 1) for i in indices if ranks[i] and (ranks[i] or 0) <= 10)
+        return round(total / len(indices), 4) if indices else 0.0
+
+    def ndcg(indices: list[int]) -> float:
+        return round(sum(gains[i] for i in indices) / len(indices), 4) if indices else 0.0
+
     everything = list(range(len(questions)))
     by_type: dict[str, dict[str, Any]] = {}
     for key in ("type", "diacritics"):
@@ -94,6 +117,8 @@ def evaluate(
             by_type[f"{key}={value}"] = {
                 "count": len(members),
                 **{f"recall@{k}": recall(members, k) for k in KS},
+                "mrr@10": mrr(members),
+                "ndcg@10": ndcg(members),
             }
     groups: dict[str, int] = {}
     for miss in misses:
@@ -101,6 +126,8 @@ def evaluate(
     return {
         "count": len(questions),
         **{f"recall@{k}": recall(everything, k) for k in KS},
+        "mrr@10": mrr(everything),
+        "ndcg@10": ndcg(everything),
         "by_group": by_type,
         "failure_groups": groups,
         "misses": misses,

@@ -6,6 +6,13 @@ MESSAGES = {
     "xlsx_stylesheet_unreadable": "Workbook stylesheet could not be read safely.",
     "xlsx_archive_limit": "Workbook exceeds an archive safety limit.",
     "xlsx_parse_failed": "Workbook could not be parsed.",
+    "format_too_large": "File exceeds the size limit for this format.",
+    "format_parse_failed": "File could not be parsed.",
+    "markitdown_missing": (
+        "markitdown is not installed; run: pip install 'phamviet-local-rag-mcp[markitdown]'"
+    ),
+    "markitdown_failed": "markitdown could not convert the file.",
+    "image_unreadable": "Image could not be decoded.",
 }
 
 

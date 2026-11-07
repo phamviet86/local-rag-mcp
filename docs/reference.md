@@ -36,6 +36,7 @@ local-rag-mcp source list
 local-rag-mcp source add-local engineering /srv/engineering --exclude archive
 local-rag-mcp source enable engineering
 local-rag-mcp source disable engineering
+local-rag-mcp source set engineering --poll-seconds 300 --full-reconcile-seconds 43200
 local-rag-mcp source remove engineering --yes
 ```
 
@@ -64,9 +65,12 @@ local-rag-mcp source add-drive work-drive DRIVE_ROOT_FOLDER_ID \
 
 Client-secret and token contents are never stored in SQLite; only the token path is registered, and
 that path is omitted from reader/status output. Token files must have mode `0600` on POSIX.
+A service account is the alternative: `source add-drive ... --service-account-key PATH` (mutually
+exclusive with `--token-file`, key mode `0600`); see [setup.md](setup.md).
 
 Full sync walks the configured root, rejects incomplete listings and unsafe path segments, and
-supports text/Markdown, PDF, DOCX, XLSX, PPTX, Google Docs, Sheets, and Slides. Incremental sync
+supports text/Markdown, PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, EPUB, ODT/ODS/ODP, JPEG/PNG/WebP
+images, Google Docs, Sheets, and Slides. Incremental sync
 consumes the Drive changes cursor and downloads/extracts only changed content fingerprints. If any
 changed item fails download, extraction, or indexing, the durable cursor is not advanced, so the
 change page can be retried safely.
@@ -100,6 +104,15 @@ candidates. Targets are relative file or folder paths within a source. Partial D
 advance the source-wide changes cursor. A matching hash rebuilds chunks/FTS from the cached effective
 artifact without rerunning extraction or OCR; `--reextract` explicitly opts into that work.
 
+The `serve` daemon schedules each enabled source on its own timer, stored in the source config:
+`poll_seconds` (default 300 for Drive, `reconcile_seconds` = 600 for local; minimum 60) and
+`full_reconcile_seconds` (default 43200; Drive only, local reconciles always walk the tree). When a
+source is due and no job is active, the daemon enqueues `reconcile(source)` (or `full` when the full
+interval has elapsed since `last_full_reconcile_at`) and runs it itself. Sources added while the
+daemon runs are scheduled on the next check; file watchers for new local sources need a daemon
+restart. `local-rag-mcp refresh [--source NAME]` queues one rate-limited incremental reconcile
+(60 seconds per source).
+
 Native Watchdog observers coalesce writes for enabled local roots. Optional periodic reconciliation
 also syncs Drive and recovers missed filesystem/change events. Manual CLI and MCP indexing do not
 depend on the background service.
@@ -116,6 +129,7 @@ local-rag-mcp search "renewal clause" --mode full_text
 local-rag-mcp search "renewal clause" --mode semantic
 local-rag-mcp read contract.pdf --source legal-drive
 local-rag-mcp read legal-drive:contract.pdf
+local-rag-mcp read legal-drive:old.pdf --include-trashed   # a Drive file in the trash
 ```
 
 Legal-document options (see [design-legal-structure.md](design-legal-structure.md)):
@@ -132,7 +146,11 @@ Each hit carries `cite_key` (`<số hiệu>#dieu-5-khoan-2`, or `<stable_ref>#c<
 `page_start`/`page_end`, `section_path`, `doc_no`, and `ocr`. OCR hits add `ocr_notice`: open the
 original page before quoting. Rows indexed before this change have no `cite_key` until
 `reindex --reextract`, which also changes chunk hashes so embeddings are recomputed. `chunk_strategy`
-(`structure` or `window`) and `structure_max_chars` are settings in `config.json`.
+(`structure` or `window`), `structure_max_chars` and `legal_chunking` (default `true`) are settings in
+`config.json`. With `legal_chunking: false`, the Vietnamese legal splitter (Điều/khoản) is skipped:
+Markdown still splits by heading and every other file uses window chunks. Chunks are rebuilt from
+the cached extraction, so run `reindex` (add `--reextract` to also refresh the extraction) after
+changing it.
 `eval` reads JSONL lines `{id, question, gold:[cite_key], type, diacritics}`; a gold Điều also accepts
 its khoản chunks.
 
@@ -214,7 +232,10 @@ local-rag-mcp relationship report.md appendix.xlsx supports \
 
 ## MCP profiles and tools
 
-The server uses the official Python MCP SDK over stdio. Select the narrowest profile:
+The server uses the official Python MCP SDK over stdio. Select the narrowest profile. Profiles scope
+the tools a process exposes; they are not authentication. For a single user driving the server over
+SSH (see [deployment-vps.md](deployment-vps.md)), `LOCAL_RAG_MCP_PROFILE=admin` is the recommended
+setting; use `reader` for ordinary retrieval clients.
 
 ```bash
 LOCAL_RAG_MCP_PROFILE=reader local-rag-mcp-server
@@ -222,12 +243,28 @@ LOCAL_RAG_MCP_PROFILE=reviewer local-rag-mcp-server
 LOCAL_RAG_MCP_PROFILE=admin local-rag-mcp-server
 ```
 
-- `reader`: `search`, `read`, `get_chunk`, `get_page_image`, `check_status`, `status`, `doctor`, `index_status`, `job_status`, `sources`,
+- `reader`: `search`, `list_documents`, `read`, `get_chunk`, `get_page_image`, `check_status`, `status`, `doctor`, `index_status`, `job_status`, `refresh`, `sources`,
   `metadata`, and `reviews`.
 - `reviewer`: reader tools plus page correction/review resolution and evidence-backed metadata and
   relationships.
 - `admin`: reviewer tools plus queued and synchronous reconcile/reindex, enable/disable, and
   confirmed source removal.
+
+Reader tool details added in this release:
+
+- `read(path, source?, start=0, length=12000, around?, window?, include_trashed=false)`: `length`
+  and `window` are capped at 40000 characters. The result has `end`, `total_chars` and
+  `next_start` (`end` while more text remains, otherwise `null`); page with `start=next_start`.
+  A document in the Drive trash returns a `document_trashed` error unless `include_trashed` is
+  true.
+- `list_documents(source?, folder?, media_type?, doc_type?, modified_after?, modified_before?,
+  include_trashed=false, limit=50, cursor?)`: `limit` is 1..100. Items carry `stable_ref`,
+  `source`, `path`, `title`, `media_type`, `doc_no`, `url`, `indexed_at`, `source_modified_at`,
+  `trashed` and `chunk_count`. Pass the opaque `next_cursor` back as `cursor`; `null` means the
+  last page, and `total` counts all matches.
+- `refresh(source?)`: queues one incremental reconcile (never full or reindex), at most once per
+  60 s per source, and returns the job with `executor` (`daemon` or `this_process`) or
+  `{"state": "rate_limited", "retry_after_seconds": N}`.
 
 Tool annotations mark read-only, mutating, and destructive operations. Profiles are capability
 exposure boundaries, not authentication. Source removal requires explicit confirmation and still
@@ -276,8 +313,56 @@ Use `read(path=stable_ref, around=start_char, window=2000)` or CLI `read REF --a
 for context. Window is total characters centered on the hit, clamped at text boundaries.
 
 Search accepts `per_document` (CLI `--per-document`, default 3, range 1..100). It caps primary
-hits per document and collapses identical chunk hashes. Each content hit includes `locations`
+hits per document and collapses identical chunk bodies (`body_hash`). Each content hit includes `locations`
 with all matching enabled, in-scope document positions and citations, including copied files.
+
+### File formats
+
+Default extensions: `.txt .md .markdown .pdf .docx .xlsx .pptx` plus `.html .htm .csv .json .epub
+.odt .ods .odp` (Python standard library only) and the images `.jpg .jpeg .png .webp`. Drive indexes
+the same formats by MIME type (`text/html`, `text/csv`, `application/json`, `application/epub+zip`,
+the ODF types, `image/jpeg`, `image/png`, `image/webp`). A home whose saved `extensions` equal an
+earlier default list adopts the current defaults on load; a customized list is left as saved.
+
+| Format | Text | Locator |
+| --- | --- | --- |
+| HTML | visible text; `script`/`style` dropped, headings become Markdown headings | `block:N` |
+| CSV | one `header: value; ...` line per data row | `row:N` |
+| JSON | flattened `path: value` leaves (50 MiB / 200,000 value limit) | `$.a.b[0]` |
+| EPUB | chapters in spine order, each through the HTML reader | `chapter:N` |
+| ODT / ODS / ODP | paragraphs and headings / rows / slides from `content.xml` | `paragraph:N`, `sheet:S/row:N`, `slide:N` |
+| JPEG / PNG / WebP | local OCR of the upright image (EXIF orientation applied, long side capped at 4096 px), as one OCR page | `page:1` |
+
+Legacy formats such as `.doc`, `.rtf` or `.xls` can be converted by the optional `markitdown` extra
+(`pip install 'phamviet-local-rag-mcp[markitdown]'`). List the extensions in `config.json`, for
+example `"markitdown_extensions": [".doc", ".rtf", ".xls"]` (default `[]`); each listed file becomes
+one Markdown span (locator `document`). Without the library the affected files fail individually with
+`code=markitdown_missing` in the report and coverage while the rest of the source indexes normally.
+New extraction codes: `format_parse_failed`, `format_too_large`, `markitdown_missing`,
+`markitdown_failed`.
+
+Images go through the same local PP-OCR runtime as scanned PDF pages: results carry `ocr: true`,
+`page_start: 1` and the OCR notice, low-confidence or blank results open a review, and without the
+OCR runtime (`setup --no-ocr`) each image is indexed without text and opens an
+`ocr_runtime_missing` review. `get_page_image` returns the upright image for page 1. Handwriting and
+some Vietnamese diacritics are often misread; open the image before quoting OCR text. An undecodable
+image fails individually with `code=image_unreadable`. HEIC is not supported.
+
+### Drive page images and integrity
+
+`get_page_image` also works for Drive PDFs when the raw download is still cached
+(`cache/sources/<id>/raw/`); the result adds `cache_matches_index` (the cached file's sha256 equals
+the indexed `content_hash`). Without the cache it fails with `page_image_unavailable`; run `refresh`
+for the source and retry. `check_status` re-hashes the same cached file for Drive documents
+(`integrity.checked: true`, `basis: drive_raw_cache`) and reports `checked: false` when it is absent.
+
+### Layout flags
+
+PDF pages with tables or columns no longer enter the review queue. Documents carry
+`layout_flags: ["complex_layout"]` and `layout_pages` in their metadata, returned by `search`
+(`layout_flags`) and `read` (`layout_flags`, `layout_pages`); `doctor` does not count them. OCR
+reasons (`ocr_runtime_missing`, `low_quality_ocr`, ...) still create reviews. Migration 13 resolves
+open `complex_layout` reviews with the note `migrated_to_layout_flag`.
 
 DOCX extraction records heading paths without changing default paragraph-then-table text.
 For existing files, explicit `reindex --source NAME --reextract` refreshes provenance. To emit

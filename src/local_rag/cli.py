@@ -66,12 +66,24 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     drive.add_argument("name")
     drive.add_argument("root_id")
     drive.add_argument("--account", required=True)
-    drive.add_argument("--token-file", type=Path, required=True)
+    credential = drive.add_mutually_exclusive_group(required=True)
+    credential.add_argument("--token-file", type=Path, help="OAuth token from auth-google")
+    credential.add_argument(
+        "--service-account-key", type=Path, help="Google service account JSON key (mode 0600)"
+    )
     drive.add_argument("--shared-drive-id", default="")
     drive.add_argument("--exclude", action="append", default=[])
     for name in ("enable", "disable"):
         subcommand = source_commands.add_parser(name)
         subcommand.add_argument("source")
+    set_schedule = source_commands.add_parser(
+        "set", help="set per-source poll and full-reconcile intervals"
+    )
+    set_schedule.add_argument("source")
+    set_schedule.add_argument("--poll-seconds", type=float, help="incremental poll (min 60)")
+    set_schedule.add_argument(
+        "--full-reconcile-seconds", type=float, help="Drive authoritative scan interval (min 60)"
+    )
     relocate = source_commands.add_parser("relocate")
     relocate.add_argument("source")
     relocate.add_argument("new_path", type=Path)
@@ -89,6 +101,10 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
             "--background", action="store_true", help="queue and return a job ID"
         )
         execution.add_argument("--wait", action="store_true", help="wait for completion (default)")
+    refresh = commands.add_parser(
+        "refresh", help="queue one rate-limited incremental reconcile (never full or reindex)"
+    )
+    refresh.add_argument("--source")
     reindex = commands.add_parser(
         "reindex", aliases=["rebuild"], help="rebuild file/folder/source/all index state"
     )
@@ -151,9 +167,22 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     read.add_argument("path")
     read.add_argument("--source")
     read.add_argument("--start", type=int, default=0)
-    read.add_argument("--length", type=int, default=12000)
+    read.add_argument("--length", type=int, default=12000, help="characters to read, 1..40000")
     read.add_argument("--around", type=int)
-    read.add_argument("--window", type=int, default=2000)
+    read.add_argument("--window", type=int, default=2000, help="window for --around, 1..40000")
+    read.add_argument(
+        "--include-trashed", action="store_true", help="also read a document in the Drive trash"
+    )
+    listing = commands.add_parser("list", help="list indexed documents with keyset pagination")
+    listing.add_argument("--source")
+    listing.add_argument("--folder", "--scope", dest="folder")
+    listing.add_argument("--media-type")
+    listing.add_argument("--doc-type", help="document code filter, e.g. NĐ-CP or TT")
+    listing.add_argument("--modified-after")
+    listing.add_argument("--modified-before")
+    listing.add_argument("--include-trashed", action="store_true")
+    listing.add_argument("--limit", type=int, default=50)
+    listing.add_argument("--cursor", help="next_cursor from the previous page")
     commands.add_parser("status")
     doctor = commands.add_parser("doctor", help="run actionable readiness checks")
     doctor.add_argument("--json", action="store_true", help="emit the stable JSON contract")
@@ -314,11 +343,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.token_file,
                 args.shared_drive_id,
                 args.exclude,
+                args.service_account_key,
             )
         elif args.source_command == "relocate":
             output = service.start_index_job(
-                "relocate", args.source, str(args.new_path.expanduser().resolve()), background=False
+                "relocate",
+                args.source,
+                str(args.new_path.expanduser().resolve()),
+                background=False,
+                defer_to_daemon=False,
             )
+        elif args.source_command == "set":
+            try:
+                output = service.set_source_schedule(
+                    args.source, args.poll_seconds, args.full_reconcile_seconds
+                )
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from exc
         elif args.source_command in {"enable", "disable"}:
             output = service.enable_source(args.source, args.source_command == "enable")
         else:
@@ -331,7 +372,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             _spawn_job(home, str(job["id"]))
             output = job
         else:
-            output = service.run_index_job(str(job["id"]))
+            output = service.run_enqueued_job(job, defer_to_daemon=False)
+    elif command == "refresh":
+        output = service.refresh(args.source, background=False)
     elif command in {"reindex", "rebuild"}:
         if not args.all and not args.source and not args.target:
             raise SystemExit("reindex requires --all, --source, or --target")
@@ -346,7 +389,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _spawn_job(home, str(job["id"]))
             output = job
         else:
-            output = service.run_index_job(str(job["id"]))
+            output = service.run_enqueued_job(job, defer_to_daemon=False)
     elif command == "search":
         output = service.search(
             args.query,
@@ -385,7 +428,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         output = _evaluate(service, args)
     elif command == "read":
         output = service.read(
-            args.path, args.source, args.start, args.length, args.around, args.window
+            args.path,
+            args.source,
+            args.start,
+            args.length,
+            args.around,
+            args.window,
+            args.include_trashed,
+        )
+    elif command == "list":
+        output = service.list_documents(
+            args.source,
+            args.folder,
+            args.media_type,
+            args.doc_type,
+            args.modified_after,
+            args.modified_before,
+            args.include_trashed,
+            args.limit,
+            args.cursor,
         )
     elif command == "status":
         output = service.status()
@@ -504,6 +565,11 @@ def entrypoint(argv: Sequence[str] | None = None) -> int:
 
 
 def legacy_entrypoint(argv: Sequence[str] | None = None) -> int:
+    print(
+        "warning: 'local-rag' is deprecated and will be removed in the next minor release; "
+        "use 'local-rag-mcp'",
+        file=sys.stderr,
+    )
     return entrypoint(argv)
 
 

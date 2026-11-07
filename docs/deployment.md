@@ -2,12 +2,12 @@
 
 This guide is the release path for macOS and Linux machines that should use `local-rag-mcp` normally.
 It assumes a trusted local user and a released wheel. Use the
-[v0.10.1 GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.1) for its
+[v0.11.0 GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.11.0) for its
 wheel, source archive, and SHA-256 checksums.
 
 ## Distribution identity
 
-The v0.10.1 wheel includes agent skills, `install-skills`, and protected embedding JSON support.
+The v0.11.0 wheel includes agent skills, `install-skills`, and protected embedding JSON support.
 Install the wheel and its skills using the [README flow](../README.md#install-with-an-agent).
 Run the installed executable's `install-skills --replace` after upgrades, retaining any custom
 `--dest` skills root; keep the environment location stable or regenerate the skill runtime references
@@ -59,7 +59,7 @@ PY
 Create a dedicated production environment first; cloning the repository is not required. Then choose
 either the convenient direct URL install or the recommended verified local-file install. For the
 latter, download the wheel, compare its SHA-256 digest with `SHA256SUMS` on the
-[release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.10.1), then install the
+[release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.11.0), then install the
 verified local file.
 
 ```bash
@@ -73,20 +73,20 @@ python -m pip install --upgrade pip
 
 ```bash
 python -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1/phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
 local-rag-mcp --help
 local-rag-mcp install-skills
 ```
 
-To verify the exact v0.10.1 wheel on a supported platform, download only the named wheel and the
+To verify the exact v0.11.0 wheel on a supported platform, download only the named wheel and the
 checksum manifest, then validate the wheel entry. `shasum` is used on macOS and `sha256sum` on Linux;
 both commands must print `OK` before installation.
 
 ```bash
-RELEASE_URL="https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1"
-WHEEL="phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
-mkdir -p "$HOME/Downloads/local-rag-mcp-v0.10.1"
-cd "$HOME/Downloads/local-rag-mcp-v0.10.1"
+RELEASE_URL="https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0"
+WHEEL="phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+mkdir -p "$HOME/Downloads/local-rag-mcp-v0.11.0"
+cd "$HOME/Downloads/local-rag-mcp-v0.11.0"
 curl -fL -O "$RELEASE_URL/$WHEEL"
 curl -fL -O "$RELEASE_URL/SHA256SUMS"
 grep -F "  $WHEEL" SHA256SUMS > "$WHEEL.sha256"
@@ -105,7 +105,7 @@ local-rag-mcp --version
 local-rag-mcp install-skills
 ```
 
-Use `SHA256SUMS` attached to the v0.10.1 release as the source of truth; do not hard-code a digest in
+Use `SHA256SUMS` attached to the v0.11.0 release as the source of truth; do not hard-code a digest in
 local deployment notes. Do not use `pip install local-rag-mcp` or a checksum copied from an untrusted
 issue, chat, or mirror.
 
@@ -113,9 +113,9 @@ Install wheel extras directly from the same release wheel:
 
 ```bash
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1/phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.10.1/phamviet_local_rag_mcp-0.10.1-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
 ```
 
 Extras may be combined if needed. Do not substitute `local-rag-mcp[...]` in any command: that PyPI
@@ -143,6 +143,11 @@ codex mcp get local-rag-mcp
 Restart/reconnect the host and make an MCP `doctor`, `sources`, and `search` call. With no sources,
 `no_enabled_sources` is the expected search response. Add a source only after the owner identifies
 it; see [setup.md](setup.md).
+
+## Remote host over SSH
+
+To keep the index and `serve` daemon on a VPS and launch the MCP server through `ssh -T`, follow
+[deployment-vps.md](deployment-vps.md).
 
 ## Troubleshooting from `doctor`
 
@@ -236,7 +241,9 @@ items are never deleted by this project.
 
 ## Maintainer checklist for future releases
 
-Before publishing a later release, confirm the tag/version, Apache-2.0 license, clean build of wheel and sdist,
+The single workflow `.github/workflows/release.yml` reads the version from `pyproject.toml`, requires
+`docs/releases/v<version>.md` and a `[release v<version>]` marker in the main commit message, and skips
+when the tag already exists on another commit. Before publishing a later release, confirm the tag/version, Apache-2.0 license, clean build of wheel and sdist,
 distribution metadata, checksum, isolated wheel installation, `setup --no-ocr`, SQLite/FTS5,
 MCP initialize/tool list, and existing test/CI gates. Attach wheel, sdist, checksums, and concise
 release notes to the GitHub Release. Publish to PyPI only under `phamviet-local-rag-mcp` after the
@@ -249,6 +256,11 @@ destinations and verifies fixture local-folder search/read through the real SDK 
 `2026-07-28` discovery and legacy `2025-11-25` initialization. `scripts/verify_mcp_stdio.py` additionally
 checks the initialized empty reader state and JSON-RPC/tool error boundary. Validate both packaged
 skills with the Codex skill-creator `quick_validate.py` before release.
+
+## Upgrading v0.10.x to v0.11.0
+
+See [v0.11.0 upgrade and rollback](releases/v0.11.0.md#upgrade-and-rollback). Migrations 10–13
+run on first startup; never run 0.10.x against the upgraded database.
 
 ## Upgrading v0.9.0 or v0.10.0 to v0.10.1
 

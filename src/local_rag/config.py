@@ -7,7 +7,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-SUPPORTED_EXTENSIONS = frozenset({".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx", ".pptx"})
+LEGACY_EXTENSIONS = frozenset({".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx", ".pptx"})
+DOCUMENT_EXTENSIONS = LEGACY_EXTENSIONS | frozenset(
+    {".html", ".htm", ".csv", ".json", ".epub", ".odt", ".ods", ".odp"}
+)
+SUPPORTED_EXTENSIONS = DOCUMENT_EXTENSIONS | frozenset({".jpg", ".jpeg", ".png", ".webp"})
+# Untouched earlier defaults: a home saved with one of these adopts the current formats.
+PREVIOUS_DEFAULT_EXTENSIONS = (LEGACY_EXTENSIONS, DOCUMENT_EXTENSIONS)
 DEFAULT_EXCLUSIONS = frozenset(
     {".git", ".hg", ".svn", ".venv", "__pycache__", "node_modules", "$RECYCLE.BIN"}
 )
@@ -58,6 +64,7 @@ class Settings:
     chunk_chars: int = 1200
     chunk_overlap: int = 150
     chunk_strategy: str = "structure"
+    legal_chunking: bool = True
     structure_max_chars: int = 2000
     reconcile_seconds: float = 600.0
     embedding_provider: str = "none"
@@ -66,21 +73,37 @@ class Settings:
     openai_api_key: str | None = None
     ocr_mode: str = "unconfigured"
     docx_document_order: bool = False
+    rerank_provider: str = "none"
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_top_n: int = 30
+    markitdown_extensions: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "root", self.root.expanduser().resolve())
         object.__setattr__(self, "home", self.home.expanduser().resolve())
-        object.__setattr__(self, "extensions", frozenset(_extension(e) for e in self.extensions))
+        markitdown = frozenset(_extension(e) for e in self.markitdown_extensions)
+        object.__setattr__(self, "markitdown_extensions", markitdown)
+        object.__setattr__(
+            self, "extensions", frozenset(_extension(e) for e in self.extensions) | markitdown
+        )
         if not isinstance(self.docx_document_order, bool):
             raise ValueError("docx_document_order must be a boolean")
         if self.chunk_chars < 100 or not 0 <= self.chunk_overlap < self.chunk_chars:
             raise ValueError("invalid chunk size or overlap")
+        if not isinstance(self.legal_chunking, bool):
+            raise ValueError("legal_chunking must be a boolean")
         if self.chunk_strategy not in {"structure", "window"}:
             raise ValueError("chunk_strategy must be structure or window")
         if self.structure_max_chars < 200:
             raise ValueError("structure_max_chars must be at least 200")
         if self.embedding_provider not in {"none", "local", "openai"}:
             raise ValueError("embedding_provider must be none, local, or openai")
+        if self.rerank_provider not in {"none", "local"}:
+            raise ValueError("rerank_provider must be none or local")
+        if not self.rerank_model.strip():
+            raise ValueError("rerank_model must not be empty")
+        if not 1 <= self.rerank_top_n <= 200:
+            raise ValueError("rerank_top_n must be between 1 and 200")
         if self.ocr_mode not in {"unconfigured", "full", "no-ocr"}:
             raise ValueError("ocr_mode must be unconfigured, full, or no-ocr")
 
@@ -125,11 +148,15 @@ class Settings:
         self.initialize_layout()
         payload = {
             "root": str(self.root),
-            "extensions": sorted(self.extensions),
+            "extensions": sorted(
+                self.extensions - (self.markitdown_extensions - SUPPORTED_EXTENSIONS)
+            ),
+            "markitdown_extensions": sorted(self.markitdown_extensions),
             "exclusions": sorted(self.exclusions),
             "chunk_chars": self.chunk_chars,
             "chunk_overlap": self.chunk_overlap,
             "chunk_strategy": self.chunk_strategy,
+            "legal_chunking": self.legal_chunking,
             "structure_max_chars": self.structure_max_chars,
             "reconcile_seconds": self.reconcile_seconds,
             "embedding_provider": self.embedding_provider,
@@ -137,6 +164,9 @@ class Settings:
             "openai_base_url": self.openai_base_url,
             "ocr_mode": self.ocr_mode,
             "docx_document_order": self.docx_document_order,
+            "rerank_provider": self.rerank_provider,
+            "rerank_model": self.rerank_model,
+            "rerank_top_n": self.rerank_top_n,
         }
         temporary = self.config_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -153,14 +183,20 @@ class Settings:
             )
         payload = json.loads(path.read_text(encoding="utf-8"))
         embedding = embedding_file_settings(data_home)
+        saved = payload.get("extensions")
+        extensions = SUPPORTED_EXTENSIONS if saved is None else frozenset(map(_extension, saved))
+        if extensions in PREVIOUS_DEFAULT_EXTENSIONS:
+            extensions = SUPPORTED_EXTENSIONS  # untouched old default: adopt the new formats
         return cls(
             root=Path(payload["root"]),
             home=data_home,
-            extensions=frozenset(payload.get("extensions", SUPPORTED_EXTENSIONS)),
+            extensions=extensions,
+            markitdown_extensions=frozenset(payload.get("markitdown_extensions", [])),
             exclusions=frozenset(payload.get("exclusions", DEFAULT_EXCLUSIONS)),
             chunk_chars=int(payload.get("chunk_chars", 1200)),
             chunk_overlap=int(payload.get("chunk_overlap", 150)),
             chunk_strategy=str(payload.get("chunk_strategy", "structure")),
+            legal_chunking=bool(payload.get("legal_chunking", True)),
             structure_max_chars=int(payload.get("structure_max_chars", 2000)),
             reconcile_seconds=float(payload.get("reconcile_seconds", 600)),
             embedding_provider=os.environ.get("LOCAL_RAG_MCP_EMBEDDING_PROVIDER")
@@ -186,6 +222,13 @@ class Settings:
             or None,
             ocr_mode=str(payload.get("ocr_mode", "unconfigured")),
             docx_document_order=payload.get("docx_document_order", False),
+            rerank_provider=os.environ.get("LOCAL_RAG_MCP_RERANK_PROVIDER")
+            or str(payload.get("rerank_provider", "none")),
+            rerank_model=os.environ.get("LOCAL_RAG_MCP_RERANK_MODEL")
+            or str(payload.get("rerank_model", "BAAI/bge-reranker-v2-m3")),
+            rerank_top_n=int(
+                os.environ.get("LOCAL_RAG_MCP_RERANK_TOP_N") or payload.get("rerank_top_n", 30)
+            ),
         )
 
     def contains(self, path: Path) -> bool:

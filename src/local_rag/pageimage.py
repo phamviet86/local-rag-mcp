@@ -1,4 +1,4 @@
-"""Render one PDF page to PNG with the PDFium library installed by the OCR runtime."""
+"""Render a PDF page (PDFium from the OCR runtime) or an image document to PNG."""
 
 from __future__ import annotations
 
@@ -69,6 +69,21 @@ def render_page_png(pdf: Path, page: int, library: Path, dpi: int = 110) -> tupl
         finally:
             lib.FPDF_CloseDocument(document)
     return _png(buffer, width, height, stride), width, height
+
+
+def render_image_png(image: Path, dpi: int = 110) -> tuple[bytes, int, int]:
+    """Return (PNG bytes, width, height) of an upright photo, scaled like an A4 page at ``dpi``."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    with Image.open(image) as source:
+        picture = ImageOps.exif_transpose(source).convert("RGB")
+    limit = max(1, round(11.69 * dpi))  # A4 long side in inches
+    picture.thumbnail((limit, limit))
+    buffer = io.BytesIO()
+    picture.save(buffer, "PNG")
+    return buffer.getvalue(), picture.width, picture.height
 
 
 def _png(bgra: bytes, width: int, height: int, stride: int) -> bytes:

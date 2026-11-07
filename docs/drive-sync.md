@@ -2,16 +2,18 @@
 
 Drive titles are metadata, never local filesystem paths. A document is identified by source ID and
 Drive file ID. Its raw cache remains `cache/sources/<source-id>/raw/<sha256(file-id)>.<type>`; the
-suffix comes from the fixed MIME/export map (Google Docs → `.txt`, Sheets → `.xlsx`, Slides →
-`.pptx`). No Drive file or folder is renamed. Slashes, backslashes, percent signs, dots, NUL, Unicode,
+suffix comes from the fixed MIME/export map (Google Docs → `.md`, Sheets → `.xlsx`, Slides →
+`.pptx`; HTML, CSV, JSON, EPUB and ODF files keep their own suffix, JPEG → `.jpg`, PNG → `.png`,
+WebP → `.webp`). No Drive file or folder is renamed. Slashes, backslashes, percent signs, dots, NUL, Unicode,
 normalization/case variants and duplicate titles cannot cause raw-cache collisions or traversal.
 
 Automatic metadata retains the full original `title` and `original_name`, `drive_file_id`,
 `drive_parent_id`, `drive_ancestor_ids` (including the configured root), `drive_path_components`,
 `drive_web_url`, MIME type, and `drive_raw_key`. The index also returns its source URL, stable external
-ID, hash and revision. `relative_path` uses standard URI-escaped name components for display/path
-scopes; a slash *inside* a title becomes `%2F`. Dot-only components are escaped and an empty title uses
-`%EMPTY`. Copy the returned path for path-based scopes. Use `folder="id:<folder-id>"` in search, or
+ID, hash and revision. `relative_path` keeps each name readable (NFC-normalized, spaces and accented
+letters unchanged) for display/path scopes; only `%`, `/`, `\` and control characters are
+percent-encoded, so a slash *inside* a title becomes `%2F` and a literal `%` becomes `%25`. Dot-only
+components are escaped and an empty title uses `%EMPTY`. Copy the returned path for path-based scopes. Use `folder="id:<folder-id>"` in search, or
 `id:<file-or-folder-id>` as reconcile/reindex target, to distinguish duplicate folder/file names.
 IDs are never interpreted as local paths. Scope filters remain strict; original titles are available
 for readable citations even when the path is escaped.
@@ -31,6 +33,49 @@ forces a full scan after a partial full/target scan or interrupted run, includin
 Incremental per-file failures replay the old changes cursor. Pending work is distinct from a known
 failure. A file-level denial remains retryable; a subsequent authoritative scan removes failures for
 files actually deleted/moved out of the root. A successful retry clears the relevant issue.
+
+## Trash, deletion and cleanup
+
+Drive trash is not deletion. The full scan lists trashed items too (`trashed` field); incremental
+`changes.list` events with `file.trashed=true` mark them, and `removed=true` means permanent
+deletion.
+
+- **Trashed file or folder.** Matching documents get `documents.trashed_at` (UTC, `Z`) and are
+  reported as `trashed`. A trashed folder is not traversed; every document whose stored ancestor IDs
+  contain it is treated as trashed. Chunks, vectors and the raw cache stay, so a restore is cheap.
+- **Hidden.** Trashed documents are excluded from `search`, `get_chunk` and `index_coverage` (and
+  therefore from coverage totals). `read`, `metadata`, `check_status` and `page_image` fail with
+  `document_trashed`; `read` accepts `include_trashed=true` (CLI `--include-trashed`) to read one anyway.
+- **Restored.** A trashed document that is listed again as not trashed gets `trashed_at=NULL` and is
+  reported as `restored`. Unchanged content needs no download; a changed checksum or modified time
+  reindexes it like any edit.
+- **Permanently deleted.** A `removed` change, or a file that disappears from a complete full scan
+  (and is not trashed), is hard deleted: rows, chunks, FTS, the raw export
+  `cache/sources/<id>/raw/<sha256(file_id)>.*`, the extraction artifact when no other document
+  references it, and vectors with no remaining chunk. Local file removals purge artifacts and
+  orphaned vectors the same way.
+- **Errors never delete.** If any folder or page failed to list, nothing is trashed or deleted in
+  that run; the retry marker forces another full scan.
+- **Garbage collection.** A complete full reconcile (not a targeted one) also removes raw files
+  with no document and extraction artifacts that no document references and that are older than
+  one hour, and reports the counts under `gc_removed` (`raw`, `artifacts`).
+
+Trashed documents are also ignored by the `check_status` side queries (`CITES_EXPIRED`,
+`DUPLICATE_SHA256`, `DUPLICATE_CONTENT`). Reviews, relationships and `status` counts still include
+them. Items returned by a scan are always live: a file moved out of a folder that is then trashed is
+not trashed, and a stored ancestor list that differs from the listing is refreshed.
+
+## Google Docs export format
+
+Google Docs are exported as Markdown (`text/markdown`, stored as `.md`) so headings become chunk
+`section_path`. A document previously indexed from a `.txt` export is re-exported and reindexed once
+at the next full scan (its stored raw key suffix differs from the expected one); the old `.txt` raw
+file is removed. Embedded base64 images (`[imageN]: <data:...>` definitions and inline
+`![](data:...)`) are stripped before indexing. If Drive rejects the Markdown export of one Doc
+(HTTP 400/415/501) that file falls back to `text/plain`/`.txt`, a per-file warning
+`export_fallback=text/plain` is reported and it is not re-exported until its content changes.
+Incremental polls only revisit changed files, so the migration completes at the next
+12 hour full reconcile or `sync --full`.
 
 ## Search/MCP contract
 

@@ -431,6 +431,7 @@ class MultiSourceTests(unittest.TestCase):
             {
                 "search",
                 "read",
+                "list_documents",
                 "get_chunk",
                 "check_status",
                 "get_page_image",
@@ -440,10 +441,15 @@ class MultiSourceTests(unittest.TestCase):
                 "index_coverage",
                 "job_status",
                 "sources",
+                "refresh",
                 "metadata",
                 "reviews",
             },
         )
+        self.assertFalse(reader["refresh"].annotations.read_only_hint)
+        self.assertFalse(reader["refresh"].annotations.destructive_hint)
+        self.assertTrue(reader["refresh"].annotations.idempotent_hint)
+        self.assertTrue(reader["refresh"].annotations.open_world_hint)
         self.assertIn("correct_page", admin)
         self.assertIn("remove_source", admin)
         self.assertTrue(admin["remove_source"].annotations.destructive_hint)

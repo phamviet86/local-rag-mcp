@@ -7,11 +7,13 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
-from urllib.parse import quote
 
 from .coverage import RETRY, load_coverage, save_coverage, source_failure
 from .extraction_errors import MAX_FILE_BYTES, ExtractionError, error_fields
@@ -23,7 +25,7 @@ GOOGLE_DOC = "application/vnd.google-apps.document"
 GOOGLE_SHEET = "application/vnd.google-apps.spreadsheet"
 GOOGLE_SLIDES = "application/vnd.google-apps.presentation"
 EXPORTS = {
-    GOOGLE_DOC: ("text/plain", ".txt"),
+    GOOGLE_DOC: ("text/markdown", ".md"),
     GOOGLE_SHEET: (
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".xlsx",
@@ -40,7 +42,20 @@ MIME_SUFFIXES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "text/html": ".html",
+    "text/csv": ".csv",
+    "application/json": ".json",
+    "application/epub+zip": ".epub",
+    "application/vnd.oasis.opendocument.text": ".odt",
+    "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+    "application/vnd.oasis.opendocument.presentation": ".odp",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
 }
+_RAW_SUFFIXES = "|".join(
+    sorted({suffix[1:] for suffix in MIME_SUFFIXES.values()} | {"bin"})
+)  # fmt: skip
 SUPPORTED_MIMES = frozenset({*EXPORTS, *MIME_SUFFIXES})
 
 
@@ -108,6 +123,14 @@ class DriveItem:
             return False
 
 
+class _ExportRejected(Exception):
+    """Drive refused the Markdown export of one Doc with a permanent client error."""
+
+
+# 400/415/501: the export format is not supported for this file. Never 401/403/429/5xx.
+EXPORT_REJECTED_STATUSES = frozenset({400, 415, 501})
+
+
 class DriveItemError(RuntimeError):
     """An item or subtree failed; the scan is retryable, never authoritative."""
 
@@ -128,6 +151,9 @@ class DriveScan:
     cursor: str
     errors: Sequence[str] = ()
     failures: Sequence[dict[str, Any]] = ()
+    # Files and folders seen in the trash. A trashed folder is not traversed: its descendants
+    # are recognised through their stored ancestor IDs.
+    trashed_ids: Sequence[str] = ()
 
 
 @dataclass(frozen=True)
@@ -138,6 +164,7 @@ class DriveChanges:
     full_rescan: bool = False
     errors: Sequence[str] = ()
     failures: Sequence[dict[str, Any]] = ()
+    trashed_ids: Sequence[str] = ()
 
 
 class DriveBackend(Protocol):
@@ -164,26 +191,52 @@ class GoogleDriveBackend:
             raise RuntimeError(
                 "Google Drive support requires: pip install 'phamviet-local-rag-mcp[google-drive]'"
             ) from exc
+        auth = str(source.config.get("auth", "oauth"))
+        credentials: Any
+        if auth == "service_account":
+            from google.oauth2 import service_account
+
+            key = Path(str(source.config.get("key_file", ""))).expanduser()
+            if not key.is_file():
+                raise ValueError(f"service account key file does not exist: {key}")
+            if os.name != "nt" and key.stat().st_mode & 0o077:
+                raise ValueError(f"service account key permissions must be 0600: {key}")
+            try:
+                credentials = service_account.Credentials.from_service_account_file(
+                    str(key), scopes=self.SCOPES
+                )
+            except Exception as exc:
+                raise ValueError("service account key is invalid") from exc
+        elif auth == "oauth":
+            credentials = self._oauth_credentials(source, Request, Credentials)
+        else:
+            raise ValueError(f"unsupported Drive auth mode: {auth}")
+        self.service = build("drive", "v3", credentials=credentials, cache_discovery=False)
+        self.shared_drive_id = str(source.config.get("shared_drive_id", ""))
+        self.exclusions = frozenset(str(v) for v in source.config.get("exclusions", []))
+        self.export_fallbacks: set[str] = set()
+
+    def _oauth_credentials(
+        self, source: SourceRecord, request_class: Any, credentials_class: Any
+    ) -> Any:
         token = Path(str(source.config.get("token_file", ""))).expanduser()
         if not token.is_file():
             raise ValueError(f"OAuth token file does not exist: {token}")
         if os.name != "nt" and token.stat().st_mode & 0o077:
             raise ValueError(f"OAuth token permissions must be 0600: {token}")
         load_credentials = cast(
-            Callable[[str, Sequence[str]], Any], Credentials.from_authorized_user_file
+            Callable[[str, Sequence[str]], Any], credentials_class.from_authorized_user_file
         )
         credentials = load_credentials(str(token), self.SCOPES)
         if not credentials.valid and credentials.refresh_token:
             try:
-                credentials.refresh(Request())
+                credentials.refresh(request_class())
             except Exception as exc:
                 raise ValueError("Google OAuth token refresh failed") from exc
             _write_token_atomic(token, credentials.to_json())
         if not credentials.valid:
             raise ValueError("Google OAuth token is invalid; run auth-google again")
-        self.service = build("drive", "v3", credentials=credentials, cache_discovery=False)
-        self.shared_drive_id = str(source.config.get("shared_drive_id", ""))
-        self.exclusions = frozenset(str(v) for v in source.config.get("exclusions", []))
+        return credentials
 
     def _execute(self, request: Any) -> dict[str, Any]:
         from google.auth.exceptions import GoogleAuthError
@@ -204,10 +257,10 @@ class GoogleDriveBackend:
         token = None
         while True:
             values: dict[str, Any] = {
-                "q": f"'{folder_id}' in parents and trashed=false",
+                "q": f"'{folder_id}' in parents",
                 "fields": (
                     "nextPageToken,incompleteSearch,files(id,name,mimeType,modifiedTime,"
-                    "md5Checksum,version,webViewLink,size,capabilities(canDownload))"
+                    "md5Checksum,version,webViewLink,size,trashed,capabilities(canDownload))"
                 ),
                 "pageSize": 1000,
                 "supportsAllDrives": True,
@@ -262,6 +315,7 @@ class GoogleDriveBackend:
         output: list[DriveItem] = []
         errors: list[str] = []
         failures: list[dict[str, Any]] = []
+        trashed: set[str] = set()
         pending: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [(root_id, (), ())]
         seen: set[str] = set()
         while pending:
@@ -289,6 +343,9 @@ class GoogleDriveBackend:
                         raise ValueError("invalid Drive metadata fields")
                     if name in self.exclusions:
                         continue
+                    if value.get("trashed"):
+                        trashed.add(identifier)
+                        continue
                     components = (*parts, name)
                     ids = (*ancestors, folder_id)
                     if mime == FOLDER_MIME:
@@ -307,11 +364,12 @@ class GoogleDriveBackend:
                             exc,
                         )
                     )
-        return DriveScan(output, cursor, errors, failures)
+        return DriveScan(output, cursor, errors, failures, tuple(sorted(trashed)))
 
     def changes(self, root_id: str, cursor: str) -> DriveChanges:
         changed_ids: set[str] = set()
         deleted: set[str] = set()
+        trashed: set[str] = set()
         next_token: str | None = cursor
         new_cursor = cursor
         full_rescan = False
@@ -333,10 +391,14 @@ class GoogleDriveBackend:
             for change in payload.get("changes", []):
                 file_id = str(change.get("fileId", ""))
                 file_value = change.get("file") or {}
-                if change.get("removed") or file_value.get("trashed"):
+                if change.get("removed"):
                     deleted.add(file_id)
                     # Removed changes may omit MIME type; this could be a folder.
                     full_rescan = True
+                elif file_value.get("trashed"):
+                    trashed.add(file_id)
+                    if file_value.get("mimeType", FOLDER_MIME) == FOLDER_MIME:
+                        full_rescan = True
                 elif file_value.get("mimeType") == FOLDER_MIME:
                     full_rescan = True
                 else:
@@ -354,27 +416,49 @@ class GoogleDriveBackend:
             # Never infer deletion from a partial tree, even for changed IDs. Return
             # all readable items and retain the old cursor; retry will use a full scan.
             return DriveChanges(scan.items, (), cursor, errors=scan.errors, failures=scan.failures)
+        trashed.update(scan.trashed_ids)
         changed = [by_id[file_id] for file_id in changed_ids if file_id in by_id]
         deleted.update(file_id for file_id in changed_ids if file_id not in by_id)
-        return DriveChanges(changed, sorted(deleted), new_cursor, full_rescan)
+        deleted -= trashed
+        return DriveChanges(
+            changed, sorted(deleted), new_cursor, full_rescan, trashed_ids=sorted(trashed)
+        )
 
     def download(self, item: DriveItem) -> bytes:
+        self.export_fallbacks.discard(item.id)
+        if item.mime_type in EXPORTS:
+            mime_type, _ = EXPORTS[item.mime_type]
+            markdown = mime_type == "text/markdown"
+            try:
+                return self._download_request(
+                    self.service.files().export_media(fileId=item.id, mimeType=mime_type),
+                    markdown,
+                )
+            except _ExportRejected:
+                # The Markdown export is rejected for this file (not a transport, auth or
+                # quota problem): keep indexing it from the plain-text export.
+                self.export_fallbacks.add(item.id)
+                return self._download_request(
+                    self.service.files().export_media(fileId=item.id, mimeType="text/plain")
+                )
+        return self._download_request(
+            self.service.files().get_media(fileId=item.id, supportsAllDrives=True)
+        )
+
+    def _download_request(self, request: Any, markdown: bool = False) -> bytes:
         from google.auth.exceptions import GoogleAuthError
         from googleapiclient.errors import HttpError
         from googleapiclient.http import MediaIoBaseDownload
         from httplib2 import HttpLib2Error
 
-        if item.mime_type in EXPORTS:
-            mime_type, _ = EXPORTS[item.mime_type]
-            request = self.service.files().export_media(fileId=item.id, mimeType=mime_type)
-        else:
-            request = self.service.files().get_media(fileId=item.id, supportsAllDrives=True)
         output, done = io.BytesIO(), False
         downloader = MediaIoBaseDownload(output, request, chunksize=4 * 1024 * 1024)
         while not done:
             try:
                 _, done = downloader.next_chunk(num_retries=5)
             except HttpError as exc:
+                if markdown and int(exc.resp.status) in EXPORT_REJECTED_STATUSES:
+                    raise _ExportRejected from exc
                 raise _api_error(exc) from exc
             except (GoogleAuthError, HttpLib2Error, OSError) as exc:
                 raise DriveSourceError(
@@ -437,12 +521,14 @@ class DriveAdapter:
         mode: str
         scan_errors: Sequence[str] = ()
         scan_failures: Sequence[dict[str, Any]] = ()
+        trashed_ids: set[str] = set()
         if target:
             normalized_target = target.strip("/")
             if not normalized_target or normalized_target in {".", ".."}:
                 raise ValueError("Drive target must be a relative file or folder path")
             scan = _scan(self.backend.full_scan(self.source.locator))
             scan_errors, scan_failures = scan.errors, scan.failures
+            trashed_ids = set(scan.trashed_ids)
             items = [
                 item
                 for item in scan.items
@@ -471,6 +557,7 @@ class DriveAdapter:
             scan = _scan(self.backend.full_scan(self.source.locator))
             items, cursor, scan_errors = scan.items, scan.cursor, scan.errors
             scan_failures = scan.failures
+            trashed_ids = set(scan.trashed_ids)
             deleted = set(known) - {item.id for item in items}
             mode = "full"
         else:
@@ -479,18 +566,43 @@ class DriveAdapter:
                 scan = _scan(self.backend.full_scan(self.source.locator))
                 items, cursor, scan_errors = scan.items, scan.cursor, scan.errors
                 scan_failures = scan.failures
+                trashed_ids = set(scan.trashed_ids)
                 deleted = set(known) - {item.id for item in items}
                 mode = "full"
             else:
                 scan_errors, scan_failures = changes.errors, changes.failures
+                trashed_ids = set(changes.trashed_ids)
                 items, cursor, deleted, mode = (
                     changes.changed,
                     changes.cursor,
                     set(changes.deleted_ids),
                     "changes",
                 )
+        # Trash is not deletion: trashed files, and everything below a trashed folder, keep their
+        # chunks, vectors and raw cache but are hidden. They must never reach the hard-delete path.
+        # Items the scan just listed are live by construction, whatever their stored (possibly
+        # stale, e.g. after a move) ancestors say.
+        listed = {item.id for item in items}
+        trashed_known = {
+            external_id: row
+            for external_id, row in known.items()
+            if external_id not in listed
+            and _is_trashed(row, trashed_ids)
+            and (
+                not target
+                or _matches_target(
+                    external_id,
+                    row["relative_path"],
+                    json.loads(row["metadata_json"]).get("drive_ancestor_ids", []),
+                    str(target).strip("/"),
+                )
+            )
+        }
+        deleted -= set(trashed_known)
         if scan_errors:
-            deleted = set()
+            deleted = set()  # A partial listing proves neither deletion nor trashing.
+            trashed_known = {}
+        to_trash = [row for row in trashed_known.values() if not row["trashed_at"]]
         self.coverage["listing_failures"] = [dict(failure) for failure in scan_failures]
         for failure in self.coverage["listing_failures"]:
             previous = known.get(failure["file_id"])
@@ -516,6 +628,7 @@ class DriveAdapter:
                 current is None
                 or current["source_version"] != item.fingerprint
                 or not item.same_content(current["source_version"])
+                or _suffix_changed(item, current)
                 or force_index
                 or reextract
             ):
@@ -528,12 +641,14 @@ class DriveAdapter:
             "unchanged": 0,
             "metadata_updated": 0,
             "removed": 0,
+            "trashed": 0,
+            "restored": 0,
             "embedded": 0,
             "warnings": [],
             "errors": list(scan_errors),
             "complete": False,
         }
-        discovered = len(items) + len(deleted)
+        discovered = len(items) + len(deleted) + len(to_trash)
         processed = searchable = 0
         if progress is not None:
             progress(
@@ -545,10 +660,20 @@ class DriveAdapter:
                     "remaining": discovered,
                 }
             )
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if items:
+            report["restored"] += self._restore_listed([item.id for item in items])
+        for row in to_trash:
+            with self.service.db.transaction() as connection:
+                connection.execute("UPDATE documents SET trashed_at=? WHERE id=?", (now, row["id"]))
+            report["trashed"] += 1
+            self.coverage["files"].pop(row["external_id"], None)
+            save_coverage(self.service.db, self.source.id, self.coverage)
+            processed += 1
         for external_id in deleted:
             row = known.get(external_id)
             if row is not None:
-                self._delete_document(int(row["id"]))
+                self._delete_document(row)
                 report["removed"] += 1
             self.coverage["files"].pop(external_id, None)
             save_coverage(self.service.db, self.source.id, self.coverage)
@@ -567,9 +692,18 @@ class DriveAdapter:
             current = known.get(item.id)
             self._stage = "index"
             self._repairs: list[str] = []
+            self._warnings: list[str] = []
+            self._actual_suffix: str | None = None
             try:
-                if current is not None and item.same_content(current["source_version"]):
-                    metadata_changed = current["source_version"] != item.fingerprint
+                if (
+                    current is not None
+                    and item.same_content(current["source_version"])
+                    and not _suffix_changed(item, current)
+                ):
+                    metadata_changed = current["source_version"] != item.fingerprint or (
+                        json.loads(current["metadata_json"]).get("drive_ancestor_ids")
+                        != list(item.ancestor_ids)
+                    )
                     if metadata_changed:
                         self._update_metadata(item, current)
                         current = self.service.db.document(Path(current["path"]), self.source.id)
@@ -592,6 +726,8 @@ class DriveAdapter:
                     report["indexed"] += 1
                 for kind in self._repairs:
                     report["warnings"].append(f"file {item.id!r}: compatibility_repair={kind}")
+                for warning in self._warnings:
+                    report["warnings"].append(f"file {item.id!r}: {warning}")
                 self._cleanup_raw(item)
                 self.coverage["files"].pop(item.id, None)
                 searchable += 1
@@ -620,6 +756,8 @@ class DriveAdapter:
                         "remaining": discovered - processed,
                     }
                 )
+        if mode == "full" and not target and not scan_errors:
+            report["gc_removed"] = self._collect_garbage()
         embedded = self.indexer.embed_pending(progress)
         report["embedded"] = embedded["embedded"]
         report["warnings"].extend(embedded["warnings"])
@@ -638,10 +776,26 @@ class DriveAdapter:
             )
         return report
 
+    def _restore_listed(self, ids: Sequence[str]) -> int:
+        """Listed items are live: clear trashed_at for them, counting rows that changed."""
+        restored = 0
+        with self.service.db.transaction() as connection:
+            for start in range(0, len(ids), 500):
+                batch = list(ids[start : start + 500])
+                restored += connection.execute(
+                    f"""UPDATE documents SET trashed_at=NULL WHERE source_id=?
+                        AND trashed_at IS NOT NULL
+                        AND external_id IN ({",".join("?" for _ in batch)})""",
+                    [self.source.id, *batch],
+                ).rowcount
+        return restored
+
     def _update_metadata(self, item: DriveItem, current: Any) -> None:
         metadata = json.loads(current["metadata_json"])
         pointer = Path(metadata.get("drive_raw_key", "unknown"))
-        metadata.update(self._identity_metadata(item, pointer))
+        metadata.update(
+            self._identity_metadata(item, pointer, bool(metadata.get("drive_export_fallback")))
+        )
         with self.service.db.transaction() as connection:
             connection.execute(
                 """UPDATE documents SET relative_path=?,title=?,source_url=?,source_version=?,
@@ -671,7 +825,9 @@ class DriveAdapter:
     ) -> None:
         raw_dir = self.service.settings.cache_dir / "sources" / self.source.id / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
-        suffix = EXPORTS.get(item.mime_type, ("", MIME_SUFFIXES.get(item.mime_type, ".bin")))[1]
+        previous_meta = json.loads(current["metadata_json"]) if current is not None else {}
+        fallback = bool(previous_meta.get("drive_export_fallback"))
+        suffix = _effective_suffix(item, previous_meta)
         safe_id = hashlib.sha256(item.id.encode()).hexdigest()
         pointer = raw_dir / f"{safe_id}{suffix}"
         if redownload or not pointer.is_file():
@@ -679,6 +835,13 @@ class DriveAdapter:
             content = self.backend.download(item)
             if len(content) > MAX_FILE_BYTES:
                 raise ValueError("Drive file exceeds the 512 MiB safety limit")
+            fallback = item.id in getattr(self.backend, "export_fallbacks", ())
+            suffix = _effective_suffix(item, {"drive_export_fallback": fallback})
+            pointer = raw_dir / f"{safe_id}{suffix}"
+            if fallback:
+                self._warnings.append("export_fallback=text/plain (Markdown export failed)")
+            elif item.mime_type == GOOGLE_DOC:
+                content = strip_data_images(content)
             descriptor, temporary_name = tempfile.mkstemp(dir=raw_dir, prefix=".download-")
             try:
                 with os.fdopen(descriptor, "wb") as stream:
@@ -688,6 +851,7 @@ class DriveAdapter:
                 os.replace(temporary_name, pointer)
             finally:
                 Path(temporary_name).unlink(missing_ok=True)
+        self._actual_suffix = suffix
         self._stage = "parse"
         content_hash = _hash_file(pointer)
         if current is not None:
@@ -699,7 +863,10 @@ class DriveAdapter:
             )
             prepared = replace(
                 prepared,
-                automatic={**prepared.automatic, **self._identity_metadata(item, pointer)},
+                automatic={
+                    **prepared.automatic,
+                    **self._identity_metadata(item, pointer, fallback),
+                },
                 relative_path=item.relative_path,
                 source_version=item.fingerprint,
                 source_url=item.web_url,
@@ -712,7 +879,7 @@ class DriveAdapter:
             pointer, content_hash, use_cache=not reextract
         )
         metadata = {
-            **self._identity_metadata(item, pointer),
+            **self._identity_metadata(item, pointer, fallback),
             "source": self.source.name,
             "source_kind": "google_drive",
             "account": self.source.account,
@@ -774,18 +941,27 @@ class DriveAdapter:
         # Only after the document commit: retire this ID's previous export extension.
         # Never follow metadata as a filesystem path.
         raw_dir = self.service.settings.cache_dir / "sources" / self.source.id / "raw"
-        suffix = EXPORTS.get(item.mime_type, ("", MIME_SUFFIXES.get(item.mime_type, ".bin")))[1]
+        suffix = self._actual_suffix
+        if suffix is None:
+            row = self.service.db.document(
+                Path(f"drive://{self.source.id}/{_display_segment(item.id)}"), self.source.id
+            )
+            meta = json.loads(row["metadata_json"]) if row is not None else {}
+            suffix = _effective_suffix(item, meta)
         key = hashlib.sha256(item.id.encode()).hexdigest()
         retained = f"{key}{suffix}"
-        pattern = re.compile(rf"{key}\.(?:txt|md|pdf|docx|xlsx|pptx|bin)")
+        pattern = re.compile(rf"{key}\.(?:{_RAW_SUFFIXES})")
         if raw_dir.is_dir():
             for path in raw_dir.iterdir():
                 if path.name != retained and pattern.fullmatch(path.name):
                     path.unlink(missing_ok=True)
 
     @staticmethod
-    def _identity_metadata(item: DriveItem, pointer: Path) -> dict[str, Any]:
+    def _identity_metadata(
+        item: DriveItem, pointer: Path, export_fallback: bool = False
+    ) -> dict[str, Any]:
         return {
+            "drive_export_fallback": export_fallback,
             "title": item.name,
             "original_name": item.name,
             "drive_file_id": item.id,
@@ -799,11 +975,107 @@ class DriveAdapter:
             "modified_time": item.modified_time,
         }
 
-    def _delete_document(self, document_id: int) -> None:
+    def _delete_document(self, row: Any) -> None:
+        """Hard delete: the row, its chunks and FTS, then raw cache, artifacts and vectors."""
         from .indexer import _delete_document
 
+        artifacts = self.service.db.document_artifact_paths([int(row["id"])])
         with self.service.db.transaction() as connection:
-            _delete_document(connection, document_id, self.service.db)
+            _delete_document(connection, int(row["id"]), self.service.db)
+        self._remove_raw(hashlib.sha256(str(row["external_id"]).encode()).hexdigest())
+        self.indexer.purge_derived(artifacts)
+
+    def _raw_dir(self) -> Path:
+        return Path(self.service.settings.cache_dir) / "sources" / self.source.id / "raw"
+
+    def _remove_raw(self, key: str) -> int:
+        removed = 0
+        pattern = re.compile(rf"{key}\.(?:{_RAW_SUFFIXES})")
+        raw_dir = self._raw_dir()
+        if raw_dir.is_dir():
+            for path in raw_dir.iterdir():
+                if pattern.fullmatch(path.name):
+                    path.unlink(missing_ok=True)
+                    removed += 1
+        return removed
+
+    def _collect_garbage(self) -> dict[str, int]:
+        """After a complete full scan, drop raw exports and artifacts no document points to."""
+        db = self.service.db
+        keys = {
+            hashlib.sha256(str(row["external_id"]).encode()).hexdigest()
+            for row in db.document_snapshot(self.source.id)
+        }
+        raw = 0
+        raw_dir = self._raw_dir()
+        if raw_dir.is_dir():
+            for path in raw_dir.iterdir():
+                if re.fullmatch(rf"[0-9a-f]{{64}}\.(?:{_RAW_SUFFIXES})", path.name) and (
+                    path.name.split(".")[0] not in keys
+                ):
+                    path.unlink(missing_ok=True)
+                    raw += 1
+        # Artifacts are shared by every source; spare recent files that an indexing job in
+        # another process may have written but not yet linked to a document.
+        referenced = db.referenced_artifact_paths()
+        cutoff = time.time() - GC_ARTIFACT_MIN_AGE_SECONDS
+        artifacts = 0
+        extracted = self.service.settings.extracted_dir
+        if extracted.is_dir():
+            for path in extracted.glob("*.json"):
+                if str(path) in referenced or str(path.resolve()) in referenced:
+                    continue
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink(missing_ok=True)
+                        artifacts += 1
+                except OSError:
+                    continue
+        return {"raw": raw, "artifacts": artifacts}
+
+
+GC_ARTIFACT_MIN_AGE_SECONDS = 3600
+
+
+def _is_trashed(row: Any, trashed_ids: set[str]) -> bool:
+    if not trashed_ids:
+        return False
+    if row["external_id"] in trashed_ids:
+        return True
+    ancestors = json.loads(row["metadata_json"]).get("drive_ancestor_ids", [])
+    return any(ancestor in trashed_ids for ancestor in ancestors)
+
+
+def _item_suffix(item: DriveItem) -> str:
+    return EXPORTS.get(item.mime_type, ("", MIME_SUFFIXES.get(item.mime_type, ".bin")))[1]
+
+
+def _effective_suffix(item: DriveItem, metadata: dict[str, Any]) -> str:
+    """Expected raw extension; a Doc whose Markdown export failed stays on its text/plain `.txt`."""
+    if item.mime_type == GOOGLE_DOC and metadata.get("drive_export_fallback"):
+        return ".txt"
+    return _item_suffix(item)
+
+
+def _suffix_changed(item: DriveItem, current: Any) -> bool:
+    """True when the stored raw export used another extension (e.g. Docs moved from .txt to .md)."""
+    metadata = json.loads(current["metadata_json"])
+    key = metadata.get("drive_raw_key")
+    return bool(key) and Path(str(key)).suffix != _effective_suffix(item, metadata)
+
+
+_DATA_IMAGE_DEFINITION = re.compile(rb"^\[[^\]]+\]:\s*<data:[^>]+>[ \t]*\r?$\n?", re.MULTILINE)
+_DATA_IMAGE_INLINE = re.compile(rb"!\[[^\]]*\]\(\s*<?data:[^)]*\)")
+_IMAGE_REFERENCE = re.compile(rb"!\[[^\]]*\]\[[^\]]*\]")
+
+
+def strip_data_images(content: bytes) -> bytes:
+    """Drop embedded base64 images from a Docs Markdown export; they are noise for search."""
+    if b"data:" not in content:
+        return content
+    content = _DATA_IMAGE_DEFINITION.sub(b"", content)
+    content = _DATA_IMAGE_INLINE.sub(b"", content)
+    return _IMAGE_REFERENCE.sub(b"", content)
 
 
 def _hash_file(path: Path) -> str:
@@ -835,10 +1107,24 @@ def _listing_failure(
 
 
 def _display_segment(value: str) -> str:
-    """URI component for display/scoping only. NEVER used as a filesystem name."""
+    """Readable path component for display/scoping only. NEVER used as a filesystem name.
+
+    The name is NFC-normalized; only ``%``, ``/``, ``\\`` and control/format characters are
+    percent-encoded, so spaces and Vietnamese letters stay readable while distinct titles such as
+    ``a/b`` and ``a%2Fb`` still map to distinct components.
+    """
+    value = unicodedata.normalize("NFC", value)
     if value in {".", ".."}:
         return "%2E" * len(value)
-    return quote(value, safe="") or "%EMPTY"
+    if not value:
+        return "%EMPTY"
+    return "".join(_escape_char(char) for char in value)
+
+
+def _escape_char(char: str) -> str:
+    if char in "%/\\" or unicodedata.category(char).startswith("C"):
+        return "".join(f"%{byte:02X}" for byte in char.encode("utf-8", "surrogatepass"))
+    return char
 
 
 def _scan(value: DriveScan | tuple[Sequence[DriveItem], str]) -> DriveScan:

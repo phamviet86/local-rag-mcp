@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import datetime as dt
 import mimetypes
+import re
 import tempfile
+from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
+from . import formats
+from .builder import Builder as _Builder
 from .extraction_errors import ExtractionError
-from .models import ExtractedDocument, SourceSpan
+from .models import ExtractedDocument
 from .ocr_runtime import OCRRuntimeManager
 from .xlsx_compat import (
     STYLES_PART,
@@ -17,6 +22,10 @@ from .xlsx_compat import (
     repair_styles,
     stylesheet_failure,
 )
+
+IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp"})
+IMAGE_MAX_SIDE = 4096
+IMAGE_PDF_DPI = 200  # pixel density of the one-page PDF a photo is wrapped in for OCR
 
 
 class Extractor:
@@ -28,7 +37,9 @@ class Extractor:
         ocr_offline: bool = False,
         docx_document_order: bool = False,
         cache_dir: Path | None = None,
+        markitdown_extensions: frozenset[str] = frozenset(),
     ):
+        self.markitdown_extensions = markitdown_extensions
         self.cache_dir = cache_dir
         self.ocr_runtime = ocr_runtime
         self.ocr_enabled = ocr_enabled
@@ -37,6 +48,18 @@ class Extractor:
 
     def extract(self, path: Path) -> ExtractedDocument:
         suffix = path.suffix.lower()
+        if suffix in self.markitdown_extensions:
+            return formats.extract_markitdown(path)
+        if suffix in {".htm", ".html"}:
+            return formats.extract_html(path)
+        if suffix == ".csv":
+            return formats.extract_csv(path)
+        if suffix == ".json":
+            return formats.extract_json(path)
+        if suffix == ".epub":
+            return formats.extract_epub(path)
+        if suffix in {".odt", ".ods", ".odp"}:
+            return formats.extract_odf(path)
         if suffix in {".txt", ".md", ".markdown"}:
             return _text(path, markdown=suffix != ".txt")
         if suffix == ".docx":
@@ -47,7 +70,95 @@ class Extractor:
             return _pptx(path)
         if suffix == ".pdf":
             return self._pdf(path)
+        if suffix in IMAGE_SUFFIXES:
+            return self._image(path)
         raise ValueError(f"unsupported file type: {suffix}")
+
+    def _ocr(
+        self, run: Callable[[str | None], Any], routed: list[int]
+    ) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+        """Run local OCR for ``routed`` 1-based pages; return page texts and review items."""
+        pages: dict[int, dict[str, Any]] = {}
+        reviews: list[dict[str, Any]] = []
+        if not (self.ocr_enabled and self.ocr_runtime.configure()):
+            reviews.extend(
+                {
+                    "page": page,
+                    "reason": "ocr_runtime_missing",
+                    "detail": {
+                        "action": "run local-rag-mcp setup --full, then reindex --reextract"
+                    },
+                }
+                for page in routed
+            )
+            return pages, reviews
+        try:
+            model_directory = self.ocr_runtime.resolved_model_dir()
+            result = run(str(model_directory) if model_directory else None)
+            for ocr_page in result.pages:
+                number = int(ocr_page.page_number)
+                markdown = (ocr_page.markdown or "").strip()
+                provenance = ocr_page.provenance
+                if markdown:
+                    pages[number] = {
+                        "text": markdown,
+                        "source": provenance.source,
+                        "confidence": provenance.ocr_confidence,
+                    }
+                if not markdown or provenance.hosted_recommended:
+                    reviews.append(
+                        {
+                            "page": number,
+                            "reason": "low_quality_ocr" if markdown else "blank_or_failed_ocr",
+                            "detail": {"warnings": list(provenance.warnings)},
+                        }
+                    )
+        except Exception as exc:
+            reviews.extend(
+                {"page": page, "reason": "ocr_failed", "detail": {"error": str(exc)}}
+                for page in routed
+            )
+        return pages, reviews
+
+    def _image(self, path: Path) -> ExtractedDocument:
+        """OCR a photo or scan as one page: orient it, wrap it in a PDF, reuse the PDF OCR path."""
+        import io
+
+        import pdf_inspector
+        from PIL import Image, ImageOps
+
+        try:
+            with Image.open(path) as source:
+                image = ImageOps.exif_transpose(source).convert("RGB")
+        except Exception as exc:
+            raise ExtractionError("image_unreadable") from exc
+        original = image.size
+        if max(original) > IMAGE_MAX_SIDE:
+            image.thumbnail((IMAGE_MAX_SIDE, IMAGE_MAX_SIDE))
+        buffer = io.BytesIO()
+        image.save(buffer, "PDF", resolution=IMAGE_PDF_DPI)
+        pdf = buffer.getvalue()
+        pages, reviews = self._ocr(
+            lambda model: pdf_inspector.process_pdf_with_ocr_bytes(
+                pdf, page_numbers=[1], model_directory=model, offline=self.ocr_offline
+            ),
+            [1],
+        )
+        builder = _Builder()
+        for number, page_data in sorted(pages.items()):
+            builder.add(
+                page_data["text"],
+                "pdf_page",
+                f"page:{number}",
+                {key: value for key, value in page_data.items() if key != "text"},
+            )
+        metadata = {
+            "page_count": 1,
+            "pages_routed_to_ocr": [1],
+            "image_width": original[0],
+            "image_height": original[1],
+        }
+        return ExtractedDocument(builder.text, builder.spans, _media(path), metadata, reviews)
 
     def _pdf(self, path: Path) -> ExtractedDocument:
         import pdf_inspector
@@ -63,56 +174,15 @@ class Extractor:
                 pages[number] = {"text": markdown, "source": "native"}
         reviews: list[dict[str, Any]] = []
         if routed:
-            if self.ocr_enabled and self.ocr_runtime.configure():
-                try:
-                    model_directory = self.ocr_runtime.resolved_model_dir()
-                    result = pdf_inspector.process_pdf_with_ocr(
-                        str(path),
-                        page_numbers=routed,
-                        model_directory=str(model_directory) if model_directory else None,
-                        offline=self.ocr_offline,
-                    )
-                    for ocr_page in result.pages:
-                        number = int(ocr_page.page_number)
-                        markdown = (ocr_page.markdown or "").strip()
-                        provenance = ocr_page.provenance
-                        if markdown:
-                            pages[number] = {
-                                "text": markdown,
-                                "source": provenance.source,
-                                "confidence": provenance.ocr_confidence,
-                            }
-                        if not markdown or provenance.hosted_recommended:
-                            reviews.append(
-                                {
-                                    "page": number,
-                                    "reason": "low_quality_ocr"
-                                    if markdown
-                                    else "blank_or_failed_ocr",
-                                    "detail": {"warnings": list(provenance.warnings)},
-                                }
-                            )
-                except Exception as exc:
-                    reviews.extend(
-                        {"page": page, "reason": "ocr_failed", "detail": {"error": str(exc)}}
-                        for page in routed
-                    )
-            else:
-                reviews.extend(
-                    {
-                        "page": page,
-                        "reason": "ocr_runtime_missing",
-                        "detail": {
-                            "action": "run local-rag-mcp setup --full, then reindex --reextract"
-                        },
-                    }
-                    for page in routed
-                )
-        complex_pages = set(classification.pages_with_tables) | set(
-            classification.pages_with_columns
-        )
-        reviews.extend(
-            {"page": page, "reason": "complex_layout", "detail": {}} for page in complex_pages
+            ocr_pages, reviews = self._ocr(
+                lambda model: pdf_inspector.process_pdf_with_ocr(
+                    str(path), page_numbers=routed, model_directory=model, offline=self.ocr_offline
+                ),
+                routed,
+            )
+            pages.update(ocr_pages)
+        complex_pages = sorted(
+            set(classification.pages_with_tables) | set(classification.pages_with_columns)
         )
         builder = _Builder()
         for number, page_data in sorted(pages.items()):
@@ -129,30 +199,11 @@ class Extractor:
             "pages_routed_to_ocr": routed,
             "complex_layout": bool(classification.is_complex_layout),
         }
+        if complex_pages:
+            # Layout is informational (tables/columns), not a work item: flag it, do not queue it.
+            metadata["layout_flags"] = ["complex_layout"]
+            metadata["layout_pages"] = complex_pages
         return ExtractedDocument(builder.text, builder.spans, "application/pdf", metadata, reviews)
-
-
-class _Builder:
-    def __init__(self) -> None:
-        self.parts: list[str] = []
-        self.spans: list[SourceSpan] = []
-        self.length = 0
-
-    def add(
-        self, value: str, kind: str, locator: str, metadata: dict[str, Any] | None = None
-    ) -> None:
-        cleaned = value.strip()
-        if not cleaned:
-            return
-        separator = "\n\n" if self.parts else ""
-        self.parts.append(separator + cleaned)
-        start = self.length + len(separator)
-        self.length += len(separator) + len(cleaned)
-        self.spans.append(SourceSpan(kind, locator, start, self.length, metadata or {}))
-
-    @property
-    def text(self) -> str:
-        return "".join(self.parts)
 
 
 def _text(path: Path, markdown: bool) -> ExtractedDocument:
@@ -243,7 +294,7 @@ def _xlsx(path: Path, cache_dir: Path | None = None) -> ExtractedDocument:
                     for cell in row:
                         if cell.value is not None:
                             builder.add(
-                                str(cell.value),
+                                _cell_text(cell.value, getattr(cell, "number_format", None)),
                                 "xlsx_cell",
                                 f"sheet:{sheet.title}/cell:{cell.coordinate}",
                             )
@@ -260,6 +311,63 @@ def _xlsx(path: Path, cache_dir: Path | None = None) -> ExtractedDocument:
             else "xlsx_parse_failed"
         )
         raise ExtractionError(code) from exc
+
+
+_QUOTED = re.compile(r'"[^"]*"|\\.|\[[^\]]*\]')
+
+
+def _cell_text(value: Any, number_format: str | None) -> str:
+    """Render a cell roughly as a spreadsheet displays it, so amounts and dates are searchable.
+
+    Strings are unchanged. Dates follow a day-first or ISO order taken from the number format and
+    drop a midnight time; numbers drop a spurious ``.0``, keep the format's decimal places, and
+    use thousands separators or a percent sign when the format asks for them. Currency or other
+    literal text in the format is not reproduced.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    pattern = _QUOTED.sub("", (number_format or "General").split(";")[0])
+    if isinstance(value, dt.datetime):
+        if value.time() == dt.time(0, 0):
+            return _date_text(value.date(), pattern)
+        return f"{_date_text(value.date(), pattern)} {_time_text(value.time())}"
+    if isinstance(value, dt.date):
+        return _date_text(value, pattern)
+    if isinstance(value, dt.time):
+        return _time_text(value)
+    if isinstance(value, int | float):
+        return _number_text(float(value) if isinstance(value, float) else value, pattern)
+    return str(value)
+
+
+def _date_text(value: dt.date, pattern: str) -> str:
+    if pattern.lower().lstrip().startswith("d"):
+        return value.strftime("%d/%m/%Y")
+    return value.isoformat()
+
+
+def _time_text(value: dt.time) -> str:
+    return value.strftime("%H:%M:%S" if value.second else "%H:%M")
+
+
+def _number_text(value: int | float, pattern: str) -> str:
+    percent = "%" in pattern
+    number = value * 100 if percent else value
+    match = re.search(r"\.([0#?]+)", pattern)
+    decimals = len(match.group(1)) if match else None
+    grouped = bool(re.search(r"[#0],[#0]", pattern))
+    if decimals is None:
+        if isinstance(number, int) or (
+            isinstance(number, float) and number.is_integer() and abs(number) < 1e15
+        ):
+            text = f"{int(number):,}" if grouped else str(int(number))
+        else:
+            text = f"{number:,.10g}" if grouped else f"{number:.10g}"
+    else:
+        text = f"{number:,.{decimals}f}" if grouped else f"{number:.{decimals}f}"
+    return f"{text}%" if percent else text
 
 
 def _pptx(path: Path) -> ExtractedDocument:

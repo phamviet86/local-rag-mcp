@@ -38,7 +38,9 @@ codex mcp add local-rag-mcp \
 
 The configured executable must be an absolute path belonging to the intended isolated environment.
 Profiles expose capabilities only; they are not authentication or a sandbox. Give `reviewer` and
-`admin` only to trusted local processes with operator approval.
+`admin` only to trusted local processes with operator approval. For a single user operating the
+service over SSH, use `LOCAL_RAG_MCP_PROFILE=admin` (see
+[deployment-vps.md](deployment-vps.md)); profiles limit tool scope, they do not authenticate anyone.
 
 ## Retrieval sequence
 
@@ -48,10 +50,51 @@ Profiles expose capabilities only; they are not authentication or a sandbox. Giv
 4. Preserve returned citation/provenance fields: source, relative path, URL where present, content
    hash/revision, page, and locator.
 
+### Recommended workflow
+
+`doctor` -> `sources` -> `search` (or `list_documents` to enumerate a source or folder) -> `read`
+-> `refresh` when `last_synced_at` is old.
+
+- `list_documents(source?, folder?, media_type?, doc_type?, modified_after?, modified_before?,
+  include_trashed?, limit<=100, cursor?)` returns `documents` (`stable_ref`, `source`, `path`,
+  `title`, `media_type`, `doc_no`, `url`, `indexed_at`, `source_modified_at`, `trashed`,
+  `chunk_count`), `total` and `next_cursor`. Pass `next_cursor` back as `cursor` until it is `null`;
+  the cursor is opaque. Trashed Drive files are hidden unless `include_trashed`. An invalid cursor is
+  an error: restart without one.
+- `read` returns at most 40000 characters per call (default `length` 12000). While `next_start` is not
+  `null`, call `read` again with `start=next_start`; it is `null` at the end of the text.
+- If `last_synced_at` for the source is old, call `refresh` and poll `job_status` before concluding.
+- Over SSH to a VPS, see [deployment-vps.md](deployment-vps.md).
+
 Prefer hybrid retrieval if embeddings are available. If it reports fallback, use the full-text
 results honestly. When embeddings are unavailable, full-text retrieval remains usable; do not claim
 the entire index is unavailable. When OCR is unavailable, native extraction remains usable and
 OCR-routed PDF pages are held in the review queue.
+
+## Job executor: the `serve` daemon
+
+`local-rag-mcp serve` is the job executor. It writes a heartbeat to the database every 10 seconds
+(from a separate thread, so a long inline job does not look like a dead daemon) and, whenever no
+job is running, claims the oldest `queued` job and runs it inline. A heartbeat older than 30 seconds
+means the daemon is considered dead.
+
+- **Daemon alive:** MCP tools and CLI commands that start an index job from another process (for
+  example a stdio session over SSH) only enqueue it and return the job with `"executor": "daemon"`.
+  Dropping that session does not affect the job. Poll it with `job_status`.
+- **No daemon:** behavior is unchanged: the job runs in the calling process and the result carries
+  `"executor": "this_process"`. CLI `reconcile`/`reindex` always run in the foreground unless
+  `--background` is given, and never re-run a job that is rejected, running or finished.
+- **Orphans:** a job left `queued` for more than 20 minutes without being started becomes `error`
+  (`queued job was never started`) so it cannot block new jobs.
+- **File events:** per-file jobs rejected because another job is active are kept and retried on a
+  later tick; they are not dropped.
+- `doctor` reports a `daemon` check: `ok` with `pid`, `hostname` and `heartbeat_at`, or `warning`
+  ("no serve daemon: scheduled sync and queued jobs will not run; jobs run in the calling process").
+  The warning is not blocking.
+- **Unclean stop:** after a crash or kill, `daemon_alive` can stay true for up to 30 seconds. Jobs
+  enqueued in that window wait for the next daemon and expire after 20 minutes if none starts.
+- Synchronous MCP tools (`reconcile`, `reindex`, `relocate_source`) and CLI foreground commands always
+  run in the calling process; over SSH prefer `start_reconcile`/`start_reindex` + `job_status`.
 
 ## Empty state is normal
 
@@ -70,9 +113,24 @@ paths outside the configured local service.
 
 ## Mutations and reviews
 
-Reader tools do not mutate state. Reviewer actions require evidence plus actor identity. Admin
+Reader tools do not mutate state, except `refresh`, which only enqueues an incremental reconcile.
+Reviewer actions require evidence plus actor identity. Admin
 actions can enqueue/reconcile/reindex and manage source lifecycle; source removal only purges derived
 local state and never authoritative source files.
+
+`refresh(source?)` queues one incremental reconcile (never full, never reindex) and returns the
+`job` (`id`, `state`, `executor`: `daemon` or `this_process`). It is limited to once per 60 seconds
+per source, measured from the newest reconcile job for that source. Without `source`, one global
+reconcile is queued and the limit is taken from the newest reconcile job of any source, so a recent
+sync of one source also rate-limits a global refresh. Inside the window it returns
+`{"state":"rate_limited","retry_after_seconds":N}`. An identical active job is returned with
+`coalesced: true`. Poll `job_status` for the outcome.
+
+Every source in `sources`, `status` and `search.coverage.freshness` carries `last_synced_at` (last
+successful sync), `last_attempt_at`, `next_sync_at` and `poll_seconds` (UTC ISO 8601 `Z`). `doctor`
+marks a source `stale` when it has had no successful sync (falling back to its creation time) for
+more than 3 x `poll_seconds`; tell the user results may be out of date and, if
+useful, call `refresh`.
 
 Index writes use a durable single-writer queue. Reader tools can inspect job/index status and search
 committed state while work runs. Admin agents should poll `job_status`; duplicate active work may

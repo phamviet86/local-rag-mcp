@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -17,11 +18,22 @@ from .embeddings import (
     public_identity,
 )
 from .extract import Extractor
-from .indexer import Indexer
-from .jobs import IndexJobManager
+from .indexer import Indexer, remove_unreferenced_artifacts
+from .jobs import IndexJobManager, daemon_alive, daemon_info, iso_z, parse_utc
 from .ocr_runtime import OCRRuntimeManager
+from .rawcache import raw_cache_file
+from .rerank import Reranker, configured_reranker, reranker_status
 from .search import SearchEngine
-from .sources import SourceRecord, SourceRegistry, source_settings
+from .sources import (
+    LAST_FULL_KEY,
+    SourceRecord,
+    SourceRegistry,
+    freshness,
+    source_settings,
+)
+
+REFRESH_MIN_INTERVAL_SECONDS = 60.0
+STALE_POLL_MULTIPLE = 3
 
 
 def _readiness_error(code: str, message: str, *commands: str) -> dict[str, Any]:
@@ -33,29 +45,54 @@ def _readiness_error(code: str, message: str, *commands: str) -> dict[str, Any]:
 
 
 def render_document_page(
-    db: Any, runtime: Any, path: str, page: int, dpi: int, source: str | None
+    db: Any,
+    runtime: Any,
+    path: str,
+    page: int,
+    dpi: int,
+    source: str | None,
+    cache_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Render one page of an indexed local PDF so a citation can be checked against the original."""
+    """Render a page of an indexed PDF or image so a citation can be checked against it."""
     import base64
     import hashlib
 
-    from .pageimage import render_page_png
+    from .pageimage import render_image_png, render_page_png
 
     document = db.resolve_document(path, source)
-    if document["media_type"] != "application/pdf":
-        raise ValueError("page images are available for PDF documents only")
+    is_image = str(document["media_type"]).startswith("image/")
+    if document["media_type"] != "application/pdf" and not is_image:
+        raise ValueError("page images are available for PDF and image documents only")
+    if is_image and page != 1:
+        raise ValueError("an image document has a single page: use page 1")
     if document["source_kind"] != "local":
-        raise ValueError("page images need a local source file; Drive files are not cached")
-    file = Path(document["path"])
+        cached = raw_cache_file(cache_dir, document) if cache_dir is not None else None
+        if cached is None:
+            raise ValueError(
+                "page_image_unavailable: the Drive file is not in the local raw cache; "
+                "run refresh for this source, then retry"
+            )
+        file = cached
+    else:
+        file = Path(document["path"])
     if not file.is_file():
         raise FileNotFoundError("source file is missing; the indexed text cannot be checked")
-    try:
-        library = runtime.paths().pdfium
-    except FileNotFoundError:
-        raise RuntimeError("PDFium runtime missing; run: local-rag-mcp setup --full") from None
-    png, width, height = render_page_png(file, page, library, dpi)
+    if is_image:
+        png, width, height = render_image_png(file, dpi)
+    else:
+        try:
+            library = runtime.paths().pdfium
+        except FileNotFoundError:
+            raise RuntimeError("PDFium runtime missing; run: local-rag-mcp setup --full") from None
+        png, width, height = render_page_png(file, page, library, dpi)
     digest = hashlib.sha256(file.read_bytes()).hexdigest()
+    drive_fields = (
+        {"cache_matches_index": digest == document["content_hash"]}
+        if document["source_kind"] != "local"
+        else {}
+    )
     return {
+        **drive_fields,
         "stable_ref": stable_ref(document),
         "page": page,
         "dpi": dpi,
@@ -68,7 +105,12 @@ def render_document_page(
 
 
 class LocalRAG:
-    def __init__(self, settings: Settings, embeddings: EmbeddingProvider | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        embeddings: EmbeddingProvider | None = None,
+        reranker: Reranker | None = None,
+    ):
         settings.initialize_layout()
         self.settings = settings
         self.db = Database(settings.database)
@@ -92,6 +134,7 @@ class LocalRAG:
             ocr_offline=settings.ocr_mode == "full",
             docx_document_order=settings.docx_document_order,
             cache_dir=settings.cache_dir,
+            markitdown_extensions=settings.markitdown_extensions,
         )
         self.indexer = Indexer(
             settings,
@@ -101,7 +144,10 @@ class LocalRAG:
             source_id=str(source["id"]),
             source_name=str(source["name"]),
         )
-        self.search_engine = SearchEngine(settings, self.db, self.embeddings)
+        self.reranker = configured_reranker(settings) if reranker is None else reranker
+        self.search_engine = SearchEngine(
+            settings, self.db, self.embeddings, reranker=self.reranker
+        )
 
     def scan(
         self,
@@ -161,8 +207,11 @@ class LocalRAG:
         length: int = 12000,
         around: int | None = None,
         window: int = 2000,
+        include_trashed: bool = False,
     ) -> dict[str, Any]:
-        return self.search_engine.read(path, start, length, self.indexer.source_id, around, window)
+        return self.search_engine.read(
+            path, start, length, self.indexer.source_id, around, window, include_trashed
+        )
 
     def status(self) -> dict[str, Any]:
         return {
@@ -173,6 +222,7 @@ class LocalRAG:
             "embedding_provider": self.settings.embedding_provider,
             "embedding_model": self.settings.embedding_model,
             "embedding_identity": public_identity(self.embeddings),
+            "reranker": reranker_status(self.settings, self.reranker),
             "ocr_runtime_installed": self.ocr_runtime.configure(),
         }
 
@@ -197,13 +247,21 @@ class LocalRAG:
 
     def page_image(self, path: str, page: int, dpi: int = 80) -> dict[str, Any]:
         return render_document_page(
-            self.db, self.ocr_runtime, path, page, dpi, self.indexer.source_id
+            self.db,
+            self.ocr_runtime,
+            path,
+            page,
+            dpi,
+            self.indexer.source_id,
+            self.settings.cache_dir,
         )
 
     def check_status(self, path: str, on: str) -> dict[str, Any]:
         from .validity import check_status
 
-        return check_status(self.db, path, on, self.indexer.source_id)
+        return check_status(
+            self.db, path, on, self.indexer.source_id, cache_dir=self.settings.cache_dir
+        )
 
     def set_validity(
         self, path: str, fields: dict[str, Any], evidence: list[dict[str, Any]], actor: str
@@ -234,9 +292,12 @@ class MultiSourceRAG:
         settings: Settings,
         embeddings: EmbeddingProvider | None = None,
         drive_backend_factory: Callable[[SourceRecord], Any] | None = None,
+        clock: Callable[[], datetime] | None = None,
+        reranker: Reranker | None = None,
     ):
         settings.initialize_layout()
         self.settings = settings
+        self.clock: Callable[[], datetime] = clock or (lambda: datetime.now(UTC))
         self.db = Database(settings.database)
         self.db.migrate()
         self.registry = SourceRegistry(settings, self.db)
@@ -251,8 +312,12 @@ class MultiSourceRAG:
             ocr_offline=settings.ocr_mode == "full",
             docx_document_order=settings.docx_document_order,
             cache_dir=settings.cache_dir,
+            markitdown_extensions=settings.markitdown_extensions,
         )
-        self.search_engine = SearchEngine(settings, self.db, self.embeddings)
+        self.reranker = configured_reranker(settings) if reranker is None else reranker
+        self.search_engine = SearchEngine(
+            settings, self.db, self.embeddings, reranker=self.reranker
+        )
         self.drive_backend_factory = drive_backend_factory
         self.jobs = IndexJobManager(self.db)
 
@@ -290,12 +355,13 @@ class MultiSourceRAG:
         name: str,
         root_id: str,
         account: str,
-        token_file: Path,
+        token_file: Path | None,
         shared_drive_id: str = "",
         exclusions: list[str] | None = None,
+        service_account_key: Path | None = None,
     ) -> dict[str, Any]:
         source = self.registry.add_drive(
-            name, root_id, account, token_file, shared_drive_id, exclusions
+            name, root_id, account, token_file, shared_drive_id, exclusions, service_account_key
         )
         return self.registry.public(source)
 
@@ -318,6 +384,70 @@ class MultiSourceRAG:
                 "local-rag-mcp source add-drive NAME ROOT_ID --account LABEL --token-file FILE",
             )
         return result
+
+    def set_source_schedule(
+        self,
+        value: str,
+        poll_seconds: float | None = None,
+        full_reconcile_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        record = self.registry.set_schedule(value, poll_seconds, full_reconcile_seconds)
+        return self.registry.public(record)
+
+    def source_freshness(self, source: str | None = None) -> list[dict[str, Any]]:
+        """Per-enabled-source sync freshness; ``source`` restricts to one id or name."""
+        return [
+            {"source": record.name, "source_id": record.id, **freshness(self.settings, record)}
+            for record in self.registry.list(enabled=True)
+            if not source or source in {record.id, record.name}
+        ]
+
+    def refresh(self, source: str | None = None, *, background: bool = True) -> dict[str, Any]:
+        """Enqueue one incremental reconcile (no full scan, no reindex), rate limited per source.
+
+        Without ``source`` one global reconcile job is queued and the limit is taken from the
+        newest reconcile job of any source. The job runs in the serve daemon when one is alive,
+        otherwise in this process.
+        """
+        if source:
+            record = self.registry.get(source)
+            if not record.enabled:
+                raise ValueError(f"source is disabled: {record.name}")
+            scope: list[str] | None = [record.id, record.name]
+            name: str | None = record.name
+        else:
+            if not self.registry.list(enabled=True):
+                return {
+                    "state": "unavailable",
+                    "error": _readiness_error(
+                        "no_enabled_sources",
+                        "No enabled source can be refreshed.",
+                        "local-rag-mcp source list",
+                        "local-rag-mcp source add-local NAME FOLDER",
+                    ),
+                }
+            scope, name = None, None
+        latest = self.jobs.latest_reconcile(scope)
+        if latest is not None:
+            elapsed = (self.clock() - parse_utc(latest["created_at"])).total_seconds()
+            if 0 <= elapsed < REFRESH_MIN_INTERVAL_SECONDS:
+                if latest["state"] in {"queued", "running"} and (
+                    latest["source"] == name or (name and latest["source"] is None)
+                ):
+                    job = self.jobs.status(latest["id"], reader=True)
+                    return {"state": job["state"], "coalesced": True, "job": job}
+                return {
+                    "state": "rate_limited",
+                    "retry_after_seconds": max(
+                        1, int(REFRESH_MIN_INTERVAL_SECONDS - elapsed + 0.999)
+                    ),
+                }
+        started = self.start_index_job("reconcile", name, background=background)
+        job = self.jobs.status(str(started["id"]), reader=True)
+        job["executor"] = started.get("executor")
+        if started.get("coalesced"):
+            job["coalesced"] = True
+        return {"state": job["state"], "job": job}
 
     def enable_source(self, value: str, enabled: bool) -> dict[str, Any]:
         return self.registry.public(self.registry.enable(value, enabled))
@@ -357,45 +487,12 @@ class MultiSourceRAG:
 
     def remove_source(self, value: str) -> dict[str, Any]:
         source = self.registry.get(value)
-        with self.db.connect() as connection:
-            artifacts = {
-                str(path)
-                for row in connection.execute(
-                    """SELECT artifact_path,effective_artifact_path FROM documents
-                       WHERE source_id=?""",
-                    (source.id,),
-                )
-                for path in (row["artifact_path"], row["effective_artifact_path"])
-                if path
-            }
-            artifacts.update(
-                str(row["artifact_path"])
-                for row in connection.execute(
-                    """SELECT rr.artifact_path FROM review_revisions rr
-                       JOIN documents d ON d.id=rr.document_id WHERE d.source_id=?""",
-                    (source.id,),
-                )
-                if row["artifact_path"]
-            )
+        artifacts = self.db.document_artifact_paths(source_id=source.id)
         result = self.db.purge_source(source.id)
         cache = self.settings.cache_dir / "sources" / source.id
         if cache.exists():
             shutil.rmtree(cache)
-        removed_artifacts = 0
-        with self.db.connect() as connection:
-            referenced = {
-                str(path)
-                for row in connection.execute(
-                    "SELECT artifact_path,effective_artifact_path FROM documents"
-                )
-                for path in (row["artifact_path"], row["effective_artifact_path"])
-                if path
-            }
-        for value in artifacts - referenced:
-            artifact = Path(value).resolve()
-            if self.settings.home == artifact or self.settings.home in artifact.parents:
-                artifact.unlink(missing_ok=True)
-                removed_artifacts += 1
+        removed_artifacts = remove_unreferenced_artifacts(self.db, self.settings, artifacts)
         result.update({"source_files_removed": False, "cache_removed": not cache.exists()})
         result["artifacts_removed"] = removed_artifacts
         return result
@@ -483,6 +580,15 @@ class MultiSourceRAG:
                         )
                     finally:
                         backend.close()
+                if (
+                    report.get("mode") == "full"
+                    and not report.get("errors")
+                    and not target
+                    and record.kind == "google_drive"
+                ):
+                    self.db.set_sync_state(
+                        record.id, LAST_FULL_KEY, self.clock().strftime("%Y-%m-%dT%H:%M:%SZ")
+                    )
                 reports.append(report)
             except Exception as exc:
                 if record.kind == "google_drive":
@@ -564,7 +670,9 @@ class MultiSourceRAG:
         from .coverage import index_coverage
 
         normalized = self.search_engine._relative_scope(folder)
-        return index_coverage(self.db, source, normalized, offset, limit)
+        result = index_coverage(self.db, source, normalized, offset, limit)
+        result["freshness"] = self.source_freshness(source)
+        return result
 
     def read(
         self,
@@ -574,8 +682,33 @@ class MultiSourceRAG:
         length: int = 12000,
         around: int | None = None,
         window: int = 2000,
+        include_trashed: bool = False,
     ) -> dict[str, Any]:
-        return self.search_engine.read(path, start, length, source, around, window)
+        return self.search_engine.read(path, start, length, source, around, window, include_trashed)
+
+    def list_documents(
+        self,
+        source: str | None = None,
+        folder: str | None = None,
+        media_type: str | None = None,
+        doc_type: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
+        include_trashed: bool = False,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        return self.search_engine.list_documents(
+            source,
+            folder,
+            media_type,
+            doc_type,
+            modified_after,
+            modified_before,
+            include_trashed,
+            limit,
+            cursor,
+        )
 
     def status(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -585,6 +718,7 @@ class MultiSourceRAG:
             "embedding_provider": self.settings.embedding_provider,
             "embedding_model": self.settings.embedding_model,
             "embedding_identity": public_identity(self.embeddings),
+            "reranker": reranker_status(self.settings, self.reranker),
             "ocr_runtime_installed": self.ocr_runtime.configure(),
             "ocr_mode": self.settings.ocr_mode,
             "reconcile_seconds": self.settings.reconcile_seconds,
@@ -665,6 +799,33 @@ class MultiSourceRAG:
             return self.jobs.start_background(job_id, execute, self._embedding_pending_count)
         return self.jobs.run(job_id, execute, self._embedding_pending_count)
 
+    def run_enqueued_job(
+        self,
+        job: dict[str, Any],
+        *,
+        background: bool = False,
+        defer_to_daemon: bool = True,
+    ) -> dict[str, Any]:
+        """Run a freshly enqueued job unless it is not ours to run.
+
+        Rejected, finished or already running jobs are returned untouched so a job held by
+        another process is never executed twice. When a serve daemon is alive and the caller is
+        not that daemon, the job stays queued for the daemon to claim.
+        """
+        if job["state"] in {"rejected", "complete", "error", "running"}:
+            return job
+        if defer_to_daemon and daemon_alive(self.db):
+            return {**job, "executor": "daemon"}
+        result = self.run_index_job(str(job["id"]), background=background)
+        return {**result, "executor": "this_process"}
+
+    def run_next_queued_job(self) -> dict[str, Any] | None:
+        """Daemon entry point: run the oldest queued job inline when nothing is running."""
+        job_id = self.jobs.next_queued()
+        if job_id is None:
+            return None
+        return self.run_index_job(job_id, background=False)
+
     def start_index_job(
         self,
         kind: str,
@@ -674,11 +835,10 @@ class MultiSourceRAG:
         reextract: bool = False,
         full: bool = False,
         background: bool = True,
+        defer_to_daemon: bool = True,
     ) -> dict[str, Any]:
         job = self.enqueue_index_job(kind, source, target, reextract=reextract, full=full)
-        if job["state"] in {"rejected", "complete", "error", "running"}:
-            return job
-        return self.run_index_job(str(job["id"]), background=background)
+        return self.run_enqueued_job(job, background=background, defer_to_daemon=defer_to_daemon)
 
     def _embedding_pending_count(self) -> int:
         if self.embeddings is None:
@@ -749,6 +909,13 @@ class MultiSourceRAG:
             "identity": public_identity(self.embeddings),
             "message": embedding_message,
         }
+        rerank = reranker_status(self.settings, self.reranker)
+        checks["reranker"] = {
+            "status": "ok" if rerank["available"] or rerank["provider"] == "none" else "warning",
+            **rerank,
+        }
+        if rerank["provider"] != "none" and not rerank["available"]:
+            actions.append({"command": "pip install 'phamviet-local-rag-mcp[rerank]'"})
         if embedding_action == "install_local_embeddings":
             actions.append({"command": "pip install 'phamviet-local-rag-mcp[local-embeddings]'"})
         elif embedding_action == "configure_openai_key":
@@ -758,7 +925,8 @@ class MultiSourceRAG:
 
         with self.db.connect() as connection:
             review_rows = connection.execute(
-                "SELECT reason,count(*) count FROM reviews WHERE status='open' GROUP BY reason"
+                """SELECT reason,count(*) count FROM reviews
+                   WHERE status='open' AND reason<>'complex_layout' GROUP BY reason"""
             ).fetchall()
             sync_rows = connection.execute(
                 """SELECT name,kind,last_sync_at,last_error FROM sources
@@ -775,20 +943,68 @@ class MultiSourceRAG:
         if review_total:
             actions.append({"command": "local-rag-mcp review list"})
         sync_errors = [str(row["name"]) for row in sync_rows if row["last_error"]]
-        checks["sync"] = {
-            "status": "error" if sync_errors else ("ok" if sync_rows else "warning"),
-            "sources_with_errors": sync_errors,
-            "sources": [
+        now = self.clock()
+        records = {record.name: record for record in enabled}
+        stale_sources: list[str] = []
+        sync_sources: list[dict[str, Any]] = []
+        for row in sync_rows:
+            record = records[str(row["name"])]
+            fresh = freshness(self.settings, record)
+            # Reference is the last successful sync; a never-synced source ages from creation.
+            reference = iso_z(record.last_success_at) or iso_z(record.created_at)
+            is_stale = (
+                reference is not None
+                and (now - parse_utc(reference)).total_seconds()
+                > STALE_POLL_MULTIPLE * fresh["poll_seconds"]
+            )
+            if is_stale:
+                stale_sources.append(record.name)
+                actions.append({"command": f"local-rag-mcp refresh --source {record.name}"})
+            sync_sources.append(
                 {
                     "name": row["name"],
                     "kind": row["kind"],
-                    "last_sync_at": row["last_sync_at"],
+                    "last_sync_at": iso_z(row["last_sync_at"]),
                     "error": row["last_error"],
+                    **fresh,
+                    "stale": is_stale,
                 }
-                for row in sync_rows
-            ],
-            "message": "sync errors detected" if sync_errors else "no recorded sync errors",
+            )
+        checks["sync"] = {
+            "status": "error"
+            if sync_errors
+            else ("warning" if stale_sources or not sync_rows else "ok"),
+            "sources_with_errors": sync_errors,
+            "stale_sources": stale_sources,
+            "sources": sync_sources,
+            "message": (
+                "sync errors detected"
+                if sync_errors
+                else (
+                    "stale: no sync within 3 x poll_seconds"
+                    if stale_sources
+                    else "no recorded sync errors"
+                )
+            ),
         }
+        daemon = daemon_info(self.db) if database_ok else None
+        if daemon is not None:
+            checks["daemon"] = {
+                "status": "ok",
+                "pid": daemon["pid"],
+                "hostname": daemon["hostname"],
+                "heartbeat_at": daemon["heartbeat_at"],
+                "message": "serve daemon is running and executes queued jobs",
+            }
+        else:
+            checks["daemon"] = {
+                "status": "warning",
+                "message": (
+                    "no serve daemon: scheduled sync and queued jobs will not run; "
+                    "jobs run in the calling process"
+                ),
+            }
+            actions.append({"command": "local-rag-mcp serve"})
         blocking = not database_ok or not enabled or ocr_status == "error" or bool(sync_errors)
         degraded = any(check["status"] == "warning" for check in checks.values())
         return {
@@ -829,12 +1045,14 @@ class MultiSourceRAG:
     def page_image(
         self, path: str, page: int, dpi: int = 80, source: str | None = None
     ) -> dict[str, Any]:
-        return render_document_page(self.db, self.ocr_runtime, path, page, dpi, source)
+        return render_document_page(
+            self.db, self.ocr_runtime, path, page, dpi, source, self.settings.cache_dir
+        )
 
     def check_status(self, path: str, on: str, source: str | None = None) -> dict[str, Any]:
         from .validity import check_status
 
-        return check_status(self.db, path, on, source)
+        return check_status(self.db, path, on, source, cache_dir=self.settings.cache_dir)
 
     def set_validity(
         self,
