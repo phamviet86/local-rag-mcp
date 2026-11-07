@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import json
 import os
 import sys
+from collections.abc import Sequence
 from typing import Any, TextIO
 
 from . import __version__
@@ -1138,8 +1141,111 @@ def _list_result(value: Any) -> list[dict[str, Any]]:
     return value
 
 
+HTTP_TOKEN_ENV = "LOCAL_RAG_MCP_HTTP_TOKEN"
+MIN_HTTP_TOKEN_LENGTH = 16
+
+
 def run_sdk_server(service: MultiSourceRAG, profile: str = "reader") -> int:
     create_sdk_server(service, profile).run(transport="stdio")
+    return 0
+
+
+def is_loopback_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_http_options(host: str, profile: str, token: str | None) -> None:
+    """Refuse HTTP configurations that would expose the index without authentication."""
+    if token is not None and len(token) < MIN_HTTP_TOKEN_LENGTH:
+        raise ValueError(f"{HTTP_TOKEN_ENV} must be at least {MIN_HTTP_TOKEN_LENGTH} characters")
+    if token is None and not is_loopback_host(host):
+        raise ValueError(f"binding {host} beyond loopback requires {HTTP_TOKEN_ENV}")
+    if token is None and profile != "reader":
+        raise ValueError(f"the {profile} profile over HTTP requires {HTTP_TOKEN_ENV}")
+
+
+class BearerTokenMiddleware:
+    """Pure ASGI guard: every HTTP request must carry ``Authorization: Bearer <token>``."""
+
+    def __init__(self, app: Any, token: str) -> None:
+        self.app = app
+        self._token = token.encode()
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        supplied = b""
+        for key, value in scope.get("headers", []):
+            if key == b"authorization":
+                scheme, _, credential = value.partition(b" ")
+                if scheme.lower() == b"bearer":
+                    supplied = credential.strip()
+                break
+        if not hmac.compare_digest(supplied, self._token):
+            body = b'{"error":"unauthorized"}'
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode()),
+                        (b"www-authenticate", b"Bearer"),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.app(scope, receive, send)
+
+
+def create_http_app(
+    service: MultiSourceRAG,
+    profile: str = "reader",
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    path: str = "/mcp",
+    token: str | None = None,
+    allowed_hosts: Sequence[str] = (),
+) -> Any:
+    validate_http_options(host, profile, token)
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    security = None
+    if not is_loopback_host(host) or allowed_hosts:
+        names = {f"{host}:{port}", *allowed_hosts}
+        security = TransportSecuritySettings(allowed_hosts=sorted(names), allowed_origins=[])
+    app = create_sdk_server(service, profile).streamable_http_app(
+        streamable_http_path=path, host=host, transport_security=security
+    )
+    if token is not None:
+        app.add_middleware(BearerTokenMiddleware, token=token)
+    return app
+
+
+def run_http_server(
+    service: MultiSourceRAG,
+    profile: str = "reader",
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    path: str = "/mcp",
+    allowed_hosts: Sequence[str] = (),
+) -> int:
+    import uvicorn
+
+    token = os.environ.get(HTTP_TOKEN_ENV) or None
+    app = create_http_app(
+        service, profile, host=host, port=port, path=path, token=token, allowed_hosts=allowed_hosts
+    )
+    uvicorn.run(app, host=host, port=port, log_level="warning")
     return 0
 
 

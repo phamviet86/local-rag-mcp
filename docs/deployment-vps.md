@@ -21,7 +21,7 @@ python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.12.0/phamviet_local_rag_mcp-0.12.0-py3-none-any.whl"
 # Optional extras, same wheel: "phamviet-local-rag-mcp[google-drive] @ <wheel URL>"
 ```
 

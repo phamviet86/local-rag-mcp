@@ -8,8 +8,8 @@ It is a standalone service: use its CLI or MCP server, not its internal Python m
 
 ## Release status and identity
 
-**v0.11.0** adds a serve daemon with per-source Drive/local sync, Drive trash handling, `refresh` and `list_documents`, new formats, and a shared-VPS-over-SSH deployment ([notes](docs/releases/v0.11.0.md)). Download its wheel and source archive only from the
-[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.11.0); this project does
+**v0.12.0** adds an optional Streamable HTTP transport with bearer-token authentication ([notes](docs/releases/v0.12.0.md)); stdio stays the default. v0.11.0 added the serve daemon, Drive trash handling and shared-VPS-over-SSH deployment ([notes](docs/releases/v0.11.0.md)). Download its wheel and source archive only from the
+[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.12.0); this project does
 not currently publish packages to PyPI.
 
 | Purpose | Name |
@@ -37,7 +37,7 @@ operator only supplies required missing source/account details and completes loc
 entry. Normal setup does not require an API key: native text extraction and full-text search work
 without optional integrations.
 
-On macOS/Linux with Python 3.11–3.13, install the v0.11.0 release wheel into a dedicated environment;
+On macOS/Linux with Python 3.11–3.13, install the v0.12.0 release wheel into a dedicated environment;
 cloning the repository is unnecessary. Reuse an intended existing environment. The release also
 includes `SHA256SUMS`; the [verified download procedure](docs/deployment.md#verify-and-install-a-release-wheel)
 checks it before installation when required.
@@ -45,7 +45,7 @@ checks it before installation when required.
 ```bash
 python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 "$HOME/.local/share/local-rag-mcp/.venv/bin/python" -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.12.0/phamviet_local_rag_mcp-0.12.0-py3-none-any.whl"
 "$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp" install-skills
 ```
 
@@ -71,8 +71,8 @@ that a client reconnect is still required. See [setup](docs/setup.md) for the op
 
 ## Manual installation and optional integrations
 
-Install the v0.11.0 release wheel into a dedicated production virtual environment; cloning the
-repository is not required. The [release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.11.0)
+Install the v0.12.0 release wheel into a dedicated production virtual environment; cloning the
+repository is not required. The [release page](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.12.0)
 also publishes SHA-256 checksums for its assets.
 
 ```bash
@@ -81,7 +81,7 @@ python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.12.0/phamviet_local_rag_mcp-0.12.0-py3-none-any.whl"
 local-rag-mcp --help
 local-rag-mcp install-skills
 ```
@@ -96,11 +96,11 @@ Optional capabilities are explicit. Add them from the same wheel with the unique
 ```bash
 # Local embedding model support
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.12.0/phamviet_local_rag_mcp-0.12.0-py3-none-any.whl"
 
 # Google Drive source support
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.12.0/phamviet_local_rag_mcp-0.12.0-py3-none-any.whl"
 ```
 
 Do not substitute `local-rag-mcp[...]` in either installation method: that PyPI name is unrelated
@@ -109,7 +109,7 @@ to this project.
 For a checkout used to contribute code, follow the development instructions in
 [AGENTS.md](AGENTS.md); editable installs are not the production deployment path.
 The previous v0.8.0 assets lack `install-skills`; their original behavior and validation remain in
-[historical release notes](docs/releases/v0.8.0.md). See [v0.11.0 release notes](docs/releases/v0.11.0.md)
+[historical release notes](docs/releases/v0.8.0.md). See [v0.12.0 release notes](docs/releases/v0.12.0.md)
 for upgrade and compatibility details.
 
 ## First-time operator setup
@@ -207,6 +207,24 @@ The generic stdio configuration is also available in
 [config/mcp.json.example](config/mcp.json.example). To run the index on a VPS and connect
 over SSH, see [VPS deployment](docs/deployment-vps.md). Agent behavior is documented in
 [docs/agents.md](docs/agents.md).
+
+### Streamable HTTP transport (optional)
+
+stdio stays the default. To serve MCP over Streamable HTTP instead:
+
+```bash
+export LOCAL_RAG_MCP_HTTP_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+local-rag-mcp mcp --transport streamable-http --port 8765   # endpoint: http://127.0.0.1:8765/mcp
+```
+
+Clients send `Authorization: Bearer <token>`. The token is read only from the environment (never a
+CLI argument) and must be at least 16 characters. Safety rules enforced at startup:
+
+- The default bind is loopback with DNS-rebinding protection (unexpected `Host` headers get 421).
+- Binding beyond loopback (`--host 0.0.0.0`) requires the token, and any public name must be listed
+  with `--allowed-host name:port`. Put TLS in front (reverse proxy); the built-in server is plain HTTP.
+- The `reviewer` and `admin` profiles over HTTP also require the token. Keep `reader` unless an
+  operator approves otherwise.
 
 ## Data, privacy, and operational limits
 

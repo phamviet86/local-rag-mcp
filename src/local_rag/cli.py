@@ -201,9 +201,25 @@ def parser(prog: str = "local-rag-mcp") -> argparse.ArgumentParser:
     job_status.add_argument("id")
     job_run = job_commands.add_parser("run", help=argparse.SUPPRESS)
     job_run.add_argument("id")
-    mcp = commands.add_parser("mcp", help="serve MCP SDK over stdio")
+    mcp = commands.add_parser("mcp", help="serve MCP SDK over stdio or Streamable HTTP")
     mcp.add_argument(
         "--profile", "--mode", choices=("reader", "reviewer", "admin"), default="reader"
+    )
+    mcp.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http"),
+        default="stdio",
+        help="stdio (default) or Streamable HTTP; HTTP auth token comes from "
+        "LOCAL_RAG_MCP_HTTP_TOKEN",
+    )
+    mcp.add_argument("--host", default="127.0.0.1", help="HTTP bind address (default loopback)")
+    mcp.add_argument("--port", type=int, default=8765, help="HTTP port (default 8765)")
+    mcp.add_argument("--path", default="/mcp", help="HTTP endpoint path (default /mcp)")
+    mcp.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        help="extra accepted Host header value (host:port) for HTTP; repeatable",
     )
 
     review = commands.add_parser("review", help="list, resolve, or correct OCR reviews")
@@ -471,8 +487,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             MultiSourceWatchService(service).run()
         return 0
     elif command == "mcp":
-        from .mcp import run_sdk_server
+        from .mcp import run_http_server, run_sdk_server
 
+        if args.transport == "streamable-http":
+            try:
+                return run_http_server(
+                    service,
+                    args.profile,
+                    host=args.host,
+                    port=args.port,
+                    path=args.path,
+                    allowed_hosts=args.allowed_host,
+                )
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
         return run_sdk_server(service, args.profile)
     elif command == "review":
         if args.review_command == "list":

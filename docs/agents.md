@@ -27,6 +27,11 @@ contact external services. See the official [stdio transport contract](https://m
 [legacy tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools).
 This is evidence for the tested stdio flows, not certification for every client or optional extension.
 
+The optional Streamable HTTP transport (`local-rag-mcp mcp --transport streamable-http`) serves the
+same tools and profiles. It binds loopback by default, requires a bearer token
+(`LOCAL_RAG_MCP_HTTP_TOKEN`) beyond loopback or for non-reader profiles, and is covered by
+`tests/test_mcp_http.py`. Never ask for or echo that token in chat.
+
 Use the narrowest MCP profile. A normal retrieval agent gets `reader`:
 
 ```bash

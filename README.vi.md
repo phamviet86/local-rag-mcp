@@ -8,8 +8,8 @@ README tiếng Anh là tài liệu chuẩn: [README.md](README.md).
 
 ## Trạng thái phát hành
 
-**v0.11.0** bổ sung daemon `serve` tự đồng bộ Drive/local theo lịch, xử lý thùng rác Drive, tool `refresh` và `list_documents`, định dạng mới và triển khai VPS dùng chung qua SSH ([ghi chú](docs/releases/v0.11.0.md)). Tải wheel và source archive duy nhất từ
-[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.11.0); hiện dự án chưa
+**v0.12.0** bổ sung transport Streamable HTTP tùy chọn với xác thực bearer token, stdio vẫn là mặc định ([ghi chú](docs/releases/v0.12.0.md)). **v0.11.0** bổ sung daemon `serve` tự đồng bộ Drive/local theo lịch, xử lý thùng rác Drive, tool `refresh` và `list_documents`, định dạng mới và triển khai VPS dùng chung qua SSH ([ghi chú](docs/releases/v0.11.0.md)). Tải wheel và source archive duy nhất từ
+[GitHub Release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.12.0); hiện dự án chưa
 phát hành package lên PyPI.
 
 | Mục đích | Tên |
@@ -31,14 +31,14 @@ tự thực hiện cấu hình và kiểm chứng. Bạn chỉ cung cấp thông
 thư mục local, folder ID, tài khoản hoặc đường dẫn file OAuth; đăng nhập và nhập secret thực hiện
 trực tiếp trên máy, không dán vào chat. Full-text search không cần API key.
 
-Cài wheel v0.11.0 trên macOS/Linux với Python 3.11–3.13; không cần clone repository. Agent kiểm tra
+Cài wheel v0.12.0 trên macOS/Linux với Python 3.11–3.13; không cần clone repository. Agent kiểm tra
 và tái sử dụng môi trường cài đặt phù hợp nếu đã có. Release kèm `SHA256SUMS`; xem
 [quy trình xác minh](docs/deployment.md#verify-and-install-a-release-wheel) khi cần kiểm tra trước khi cài:
 
 ```bash
 python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 "$HOME/.local/share/local-rag-mcp/.venv/bin/python" -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.12.0/phamviet_local_rag_mcp-0.12.0-py3-none-any.whl"
 "$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp" install-skills
 ```
 
@@ -63,8 +63,8 @@ các thao tác được giao. Xem [docs/setup.md](docs/setup.md).
 
 ## Cài thủ công và tích hợp tuỳ chọn
 
-Cài trực tiếp wheel v0.11.0 vào virtual environment riêng (Python 3.11–3.13); không cần clone mã
-nguồn. [Trang release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.11.0) công bố
+Cài trực tiếp wheel v0.12.0 vào virtual environment riêng (Python 3.11–3.13); không cần clone mã
+nguồn. [Trang release](https://github.com/phamviet86/local-rag-mcp/releases/tag/v0.12.0) công bố
 SHA-256 cho từng artifact:
 
 ```bash
@@ -72,7 +72,7 @@ mkdir -p "$HOME/.local/share/local-rag-mcp"
 python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 . "$HOME/.local/share/local-rag-mcp/.venv/bin/activate"
 python -m pip install \
-  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+  "https://github.com/phamviet86/local-rag-mcp/releases/download/v0.12.0/phamviet_local_rag_mcp-0.12.0-py3-none-any.whl"
 local-rag-mcp setup --no-ocr
 local-rag-mcp install-skills
 local-rag-mcp doctor --json
@@ -87,9 +87,9 @@ Extras cài từ cùng wheel release bằng distribution đúng:
 
 ```bash
 python -m pip install \
-  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[local-embeddings] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.12.0/phamviet_local_rag_mcp-0.12.0-py3-none-any.whl"
 python -m pip install \
-  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.11.0/phamviet_local_rag_mcp-0.11.0-py3-none-any.whl"
+  "phamviet-local-rag-mcp[google-drive] @ https://github.com/phamviet86/local-rag-mcp/releases/download/v0.12.0/phamviet_local_rag_mcp-0.12.0-py3-none-any.whl"
 ```
 
 `setup --full` tải và kiểm tra runtime OCR local; `setup --no-ocr` vẫn hỗ trợ text/Office/native PDF
@@ -108,7 +108,7 @@ nâng cấp, rollback và gỡ cài đặt. Tham chiếu tính năng/lệnh đ�
 [docs/reference.md](docs/reference.md).
 
 Các artifact v0.8.0 trước đây chưa có `install-skills`; giữ nguyên bằng chứng và hướng dẫn cũ trong
-[ghi chú v0.8.0](docs/releases/v0.8.0.md). Xem [ghi chú v0.11.0](docs/releases/v0.11.0.md) để nâng cấp.
+[ghi chú v0.8.0](docs/releases/v0.8.0.md). Xem [ghi chú v0.12.0](docs/releases/v0.12.0.md) để nâng cấp.
 
 ## Kết nối Codex MCP
 
