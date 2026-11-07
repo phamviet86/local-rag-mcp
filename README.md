@@ -208,6 +208,24 @@ The generic stdio configuration is also available in
 over SSH, see [VPS deployment](docs/deployment-vps.md). Agent behavior is documented in
 [docs/agents.md](docs/agents.md).
 
+### Streamable HTTP transport (optional)
+
+stdio stays the default. To serve MCP over Streamable HTTP instead:
+
+```bash
+export LOCAL_RAG_MCP_HTTP_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+local-rag-mcp mcp --transport streamable-http --port 8765   # endpoint: http://127.0.0.1:8765/mcp
+```
+
+Clients send `Authorization: Bearer <token>`. The token is read only from the environment (never a
+CLI argument) and must be at least 16 characters. Safety rules enforced at startup:
+
+- The default bind is loopback with DNS-rebinding protection (unexpected `Host` headers get 421).
+- Binding beyond loopback (`--host 0.0.0.0`) requires the token, and any public name must be listed
+  with `--allowed-host name:port`. Put TLS in front (reverse proxy); the built-in server is plain HTTP.
+- The `reviewer` and `admin` profiles over HTTP also require the token. Keep `reader` unless an
+  operator approves otherwise.
+
 ## Data, privacy, and operational limits
 
 - Source files and Drive content remain authoritative. The data root contains derived text and may
