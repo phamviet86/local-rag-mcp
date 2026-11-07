@@ -45,7 +45,8 @@ python3.11 -m venv "$HOME/.local/share/local-rag-mcp/.venv"
 Lệnh cuối trả đường dẫn tuyệt đối của **local-rag-setup** (cấu hình, kết nối, kiểm chứng) và
 **local-rag** (tìm, đọc, trích nguồn). Agent đọc các file ngay để tiếp tục; tải lại ứng dụng nếu cần
 để lần sau tự phát hiện skill. Thư mục mặc định là `$CODEX_HOME/skills` nếu được đặt, nếu không là
-`~/.agents/skills`; chọn nơi khác bằng `--dest /duong/dan/tuyet/doi`.
+`~/.agents/skills`; chọn nơi khác bằng `--dest /duong/dan/tuyet/doi`, ví dụ
+`--dest "$HOME/.claude/skills"` cho Claude Code.
 
 `--dry-run` xem trước, `--check` kiểm tra không ghi dữ liệu; `--replace` cập nhật skill do bộ cài này
 quản lý khi nội dung khác. Cài lại nội dung giống nhau không thay đổi file. Bộ cài giữ skill khác và
@@ -125,7 +126,55 @@ Kết nối lại Codex rồi kiểm tra `doctor`, `sources`, `search`. Chỉ c�
 cho tiến trình local đáng tin cậy. Đọc [docs/agents.md](docs/agents.md) và
 [SECURITY.md](SECURITY.md) trước khi cho agent truy cập dữ liệu.
 
-See [Drive sync identity, retries, coverage and isolated trial](docs/drive-sync.md).
+## Kết nối Claude Code MCP
+
+Đăng ký một lần cho người dùng để mọi project Claude Code (CLI, tab Code của Claude Desktop, extension
+IDE) đều dùng được, với cùng đường dẫn tuyệt đối và profile `reader`:
+
+```bash
+claude mcp add --scope user \
+  --env LOCAL_RAG_MCP_HOME="$HOME/.local-rag" \
+  --env LOCAL_RAG_MCP_PROFILE=reader \
+  local-rag-mcp -- "$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp-server"
+claude mcp get local-rag-mcp
+```
+
+Cài skill vào thư mục Claude Code tự nhận:
+
+```bash
+"$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp" install-skills --dest "$HOME/.claude/skills"
+```
+
+Mở phiên Claude Code mới (phiên đang chạy không nhận server hay tool mới), rồi yêu cầu gọi `doctor`,
+`sources`, `search` của `local-rag-mcp`. Dùng `--scope project` nếu muốn chia sẻ qua `.mcp.json` của
+repository; đường dẫn tuyệt đối vẫn là của từng máy.
+
+## Kết nối Claude Desktop MCP
+
+Tab Chat của Claude Desktop đọc `claude_desktop_config.json` (macOS:
+`~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`). Mở bằng Settings → Developer →
+Edit Config, thêm server vào `mcpServers` và thay `/Users/you` bằng thư mục home thật (file này không
+hiểu `$HOME` hay `~`):
+
+```json
+{
+  "mcpServers": {
+    "local-rag-mcp": {
+      "command": "/Users/you/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp-server",
+      "env": {
+        "LOCAL_RAG_MCP_HOME": "/Users/you/.local-rag",
+        "LOCAL_RAG_MCP_PROFILE": "reader"
+      }
+    }
+  }
+}
+```
+
+Thoát hẳn Claude Desktop rồi mở lại; tool hiện trong menu công cụ của khung chat. Tab Code của Claude
+Desktop dùng đăng ký Claude Code ở trên. claude.ai trên web và app điện thoại không kết nối được server
+stdio cục bộ.
+
+Xem thêm [Drive sync: định danh, thử lại, coverage và thử nghiệm cách ly](docs/drive-sync.md).
 
 ## Nâng cấp 0.11.0
 

@@ -53,7 +53,7 @@ The installer reports absolute paths for **local-rag-setup** (configuration and 
 **local-rag** (retrieval and citations). Read those files immediately to continue setup; reload the
 agent client when required for automatic skill discovery. The default skills root is
 `$CODEX_HOME/skills` when set, otherwise `~/.agents/skills`. Use `--dest /absolute/skills/root` for
-another supported client/scope. `--dry-run` previews without writes, `--check` verifies the installed
+another supported client/scope, for example `--dest "$HOME/.claude/skills"` for Claude Code. `--dry-run` previews without writes, `--check` verifies the installed
 content, and `--replace` updates differing skills previously managed by this installer. Unchanged
 installs do nothing; unrelated skills and client configuration are preserved. Unmanaged same-name or
 symlinked folders are refused, even with `--replace`.
@@ -154,6 +154,54 @@ codex mcp get local-rag-mcp
 Restart or reconnect the MCP host, then call `doctor`, `sources`, and `search`. A saved registration
 alone is not proof that the server can initialize. MCP profiles are capability boundaries, not
 authentication: reserve `reviewer` and `admin` for trusted local processes only.
+
+## Connect Claude Code through MCP
+
+Register the server once for your user so every Claude Code project (CLI, desktop Code tab, IDE
+extensions) can use it, with the same absolute paths and the reader profile:
+
+```bash
+claude mcp add --scope user \
+  --env LOCAL_RAG_MCP_HOME="$HOME/.local-rag" \
+  --env LOCAL_RAG_MCP_PROFILE=reader \
+  local-rag-mcp -- "$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp-server"
+claude mcp get local-rag-mcp
+```
+
+Install the skills where Claude Code discovers them:
+
+```bash
+"$HOME/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp" install-skills --dest "$HOME/.claude/skills"
+```
+
+Start a new Claude Code session (running sessions do not pick up new servers or tools), then ask it
+to call `doctor`, `sources` and `search` on `local-rag-mcp`. Use `--scope project` instead to share
+the registration through the repository's `.mcp.json`; keep the absolute paths machine-specific.
+
+## Connect Claude Desktop through MCP
+
+The Chat tab of Claude Desktop reads `claude_desktop_config.json` (macOS:
+`~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`). Open it from Settings →
+Developer → Edit Config and add the server inside `mcpServers`, replacing `/Users/you` with your home
+directory (the file does not expand `$HOME` or `~`):
+
+```json
+{
+  "mcpServers": {
+    "local-rag-mcp": {
+      "command": "/Users/you/.local/share/local-rag-mcp/.venv/bin/local-rag-mcp-server",
+      "env": {
+        "LOCAL_RAG_MCP_HOME": "/Users/you/.local-rag",
+        "LOCAL_RAG_MCP_PROFILE": "reader"
+      }
+    }
+  }
+}
+```
+
+Quit Claude Desktop completely and reopen it; the tools appear under the chat's tools menu. The Code
+tab of Claude Desktop uses the Claude Code registration above instead. claude.ai on the web and in
+the mobile app cannot reach a local stdio server.
 
 The generic stdio configuration is also available in
 [config/mcp.json.example](config/mcp.json.example). To run the index on a VPS and connect
